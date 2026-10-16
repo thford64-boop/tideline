@@ -638,7 +638,9 @@ class Editor:
         if clip is None:
             raise EditError("Select a clip to apply the transition to.")
         self._free(track)
-        want = "video" if type_ in VIDEO_TRANSITIONS else "audio"
+        from .engine.effects import TRANSITIONS      # extensions add transitions there
+        tdef = TRANSITIONS.get(type_)
+        want = tdef.kind if tdef is not None else ("video" if type_ in VIDEO_TRANSITIONS else "audio")
         if track.kind != want:
             raise EditError(f"This is {'a video' if want == 'video' else 'an audio'} transition; "
                             f"apply it to {'a video' if want == 'video' else 'an audio'} clip.")

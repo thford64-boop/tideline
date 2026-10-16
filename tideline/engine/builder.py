@@ -7,11 +7,16 @@ between adjacent clips become small nested tractors spliced into the playlist.
 The graph is rebuilt from scratch after every structural edit; the expensive
 part (opening media files) is avoided by caching producers between builds.
 Parameter tweaks skip the rebuild and update the live filters instead.
+
+A builder made with ``proxies=True`` (the editor's preview) reads each video
+item's proxy file instead of the original when it has one; exports and
+exported frames use a plain builder and so always render the originals.
 """
 
 import os
 from xml.sax.saxutils import escape
 
+from .. import proxies as proxymod
 from .. import timeremap
 from .effects import EFFECTS, TRANSITIONS, fade_gain, gain_to_db
 from .mltlib import color_to_mlt, init, make_profile, mlt
@@ -85,9 +90,10 @@ class ProducerCache:
 
 
 class Builder:
-    def __init__(self, project):
+    def __init__(self, project, proxies=False):
         init()
         self.project = project
+        self.proxies = proxies
         self.cache = ProducerCache()
         self._profiles = {}      # sequence id -> (signature, profile)
 
@@ -115,7 +121,7 @@ class Builder:
         fps_num, fps_den = (seq.fps_num, seq.fps_den) if seq is not None else (30, 1)
         if media.kind == "sequence":
             inner = self.project.sequences.get(media.sequence_id)
-            builder = Builder(self.project)
+            builder = Builder(self.project, self.proxies)
             graph = builder.build(inner)
             return graph.profile, graph.tractor, graph.length, [graph, builder]
         if seq is None and media.fps:
@@ -133,6 +139,15 @@ class Builder:
         else:
             length = producer.get_length()
         return profile, producer, max(1, length), refs + [profile]
+
+    def source_path(self, media):
+        """(file to read for a media item, True when it is a proxy). A proxy
+        also stands in for an original that is offline."""
+        if self.proxies and media.kind == "video":
+            proxy = proxymod.find(self.project, media)
+            if proxy:
+                return proxy, True
+        return media.path, False
 
     # -- sequence --------------------------------------------------------
     def _build_into(self, graph, seq, profile, depth, chain):
@@ -257,11 +272,12 @@ class Builder:
         """Producer for timeline range [s, e) of a clip, with its effects."""
         media = self.project.media[clip.media_id]
         speed = clip.speed * (-1 if clip.reverse else 1)
+        path, _ = self.source_path(media)
         key = (seq.id, profile.width(), profile.height(), profile.frame_rate_num(),
-               profile.frame_rate_den(), media.id, media.path, round(speed, 6), track.id, lane,
+               profile.frame_rate_den(), media.id, path, round(speed, 6), track.id, lane,
                self._revision(media))
         remap = timeremap.remap_of(clip) if media.kind in timeremap.MEDIA_KINDS else None
-        if remap is not None and not media.offline and media.path and os.path.exists(media.path):
+        if remap is not None and path and os.path.exists(path):
             key += ("remap", clip.id, remap.signature)
             parent = self.cache.get(key, lambda: self._make_remapped(media, profile, seq, clip, remap))
         else:
@@ -333,8 +349,9 @@ class Builder:
         total = self.project.media_frames(media, seq, clip.speed)
         tmap = timeremap.time_map(remap, seq.fps, abs(clip.speed), total, clip.reverse)
         out = timeremap.MAX_FRAMES - 1
+        path, proxy = self.source_path(media)
         xml = (f'<?xml version="1.0" encoding="utf-8"?><mlt><chain id="remap" out="{out}">'
-               f'<property name="resource">{escape(media.path)}</property>'
+               f'<property name="resource">{escape(path)}</property>'
                f'<property name="length">{out + 1}</property>'
                '<link id="timeremap"><property name="mlt_service">timeremap</property>'
                f'<property name="time_map">{tmap}</property>'
@@ -345,7 +362,7 @@ class Builder:
             return self._make_producer(media, profile, clip.speed * (-1 if clip.reverse else 1),
                                        {}, 0, ())
         refs = [profile]
-        if media.kind == "video" and _needs_yuv_matrix_fix(media):
+        if media.kind == "video" and not proxy and _needs_yuv_matrix_fix(media):
             fix = mlt.Filter(profile, "gamma")
             fix.set("gamma", 1.0)
             p.attach(fix)
@@ -357,19 +374,19 @@ class Builder:
         refs = [profile]
         kind = media.kind
         if kind in ("video", "audio", "image"):
-            if media.offline or not media.path or not os.path.exists(media.path):
+            path, proxy = self.source_path(media)
+            if not path or not os.path.exists(path) or (media.offline and not proxy):
                 p = mlt.Producer(profile, "color:#ff40161c")
                 p.set("length", UNLIMITED)
                 p.set("out", UNLIMITED - 1)
                 return p, refs
-            path = media.path
             if kind != "image" and abs(speed - 1.0) > 1e-9:
                 p = mlt.Producer(profile, f"timewarp:{speed:.6f}:{path}")
                 if p.is_valid():
                     p.set("warp_pitch", 1 if 0.5 <= abs(speed) <= 2.0 else 0)
             else:
                 p = mlt.Producer(profile, path)
-            if p.is_valid() and kind == "video" and _needs_yuv_matrix_fix(media):
+            if p.is_valid() and kind == "video" and not proxy and _needs_yuv_matrix_fix(media):
                 # MLT mis-converts BT.601 sources when they are scaled straight
                 # to RGB (any preview-scaled or transformed frame). A no-op
                 # filter that works in YUV forces the correct matrix first.

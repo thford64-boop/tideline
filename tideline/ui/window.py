@@ -54,7 +54,10 @@ class MainWindow(Gtk.ApplicationWindow):
         bar = Gtk.HeaderBar()
         menubar = Gio.Menu()
         for title, entries in MENUS:
-            menubar.append_submenu(title, build_menu(entries))
+            menu = build_menu(entries)
+            if title == "Extensions":
+                self._add_extension_commands(menu)
+            menubar.append_submenu(title, menu)
         pmb = Gtk.PopoverMenuBar.new_from_model(menubar)
         pmb.set_focusable(False)
         bar.pack_start(pmb)
@@ -204,6 +207,20 @@ class MainWindow(Gtk.ApplicationWindow):
             self.ws_buttons[name[10:]].set_active(True)
         elif name.startswith("panel_"):
             self.show_panel(name[6:])
+
+    def _add_extension_commands(self, menu):
+        """One section per extension that added commands, labelled with its name."""
+        by_ext = {}
+        for cmd in self.app.extensions.commands:
+            by_ext.setdefault(cmd.ext.name, []).append(cmd)
+        for name, cmds in by_ext.items():
+            section = Gio.Menu()
+            for cmd in cmds:
+                item = Gio.MenuItem.new(cmd.label, "app." + cmd.action)
+                if cmd.accel:
+                    item.set_attribute_value("accel", GLib.Variant.new_string(cmd.accel))
+                section.append_item(item)
+            menu.append_section(name, section)
 
     def set_workspace(self, key):
         self.workspace = key

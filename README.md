@@ -137,6 +137,30 @@ work, and timecode and safe margins can be shown over the picture. It mirrors
 the Program monitor's frames, so it costs no extra rendering; its sharpness
 follows that monitor's resolution setting.
 
+**Proxies** — edit 4K or high-bitrate footage smoothly by playing small
+copies of it. Select video in the Project panel and choose **Proxy ▸ Create
+Proxies** (right-click), or **File ▸ Proxies ▸ Create Proxies for All Video**;
+FFmpeg makes them in the background while you keep working, with progress in
+the status bar and a **Proxy** column in the Project panel. **Use Proxies**
+(Ctrl+Alt+P, or the button under each monitor) switches between proxies and
+originals at any time. Every edit, effect and keyframe applies to both,
+because a proxy has the same length, frame rate and sound as its original;
+exports and exported frames always render the originals. **Edit ▸
+Preferences ▸ Proxies** sets the size (360p to 1080p), the format (MJPEG,
+fastest to scrub, or smaller H.264), where they are kept (a `Proxies` folder
+beside the project file, or the cache folder) and whether large files get one
+automatically on import (above 1080p, or 4K and up). **Attach Proxy…** uses a
+file you made elsewhere. A proxy also stands in for an original that is
+offline, so a project can be cut on a laptop with only its proxies. If the
+original file changes, its proxy is ignored until you make a new one.
+
+**Extensions** — folders in `~/.config/tideline/extensions` that add effects,
+transitions, export formats, presets, menu commands and event hooks. None are
+included; **Extensions ▸ Manage Extensions** installs them (from a zip or a
+folder), turns them on or off and shows what each added or why it failed. See
+[Writing extensions](#writing-extensions) below and the full guide in
+[docs/EXTENSIONS.md](docs/EXTENSIONS.md).
+
 **Transitions** — cross dissolve, dips, wipes, iris, clock, push and slide for
 video; constant power, constant gain and exponential crossfades for audio.
 Between two clips or as a fade at a clip's free end.
@@ -173,7 +197,9 @@ shortcut list is under **Edit ▸ Keyboard Shortcuts** (Ctrl+Alt+K).
 
 Being upfront about the gaps compared with a commercial editor:
 
-- no multicam, proxy workflow or hardware (VAAPI) encoding presets;
+- no multicam or hardware (VAAPI) encoding presets;
+- proxies are made for video files only, not for stills or nested sequences;
+- extensions load at start-up, so installing or changing one needs a restart;
 - captions are burned in as titles; there is no closed-caption stream in exports
   (export an SRT or WebVTT file alongside instead);
 - no curves/scopes panel; colour tools are parameter sliders;
@@ -192,21 +218,92 @@ Being upfront about the gaps compared with a commercial editor:
   editors' project files;
 - panels switch between three fixed workspaces; they cannot be re-docked freely.
 
+## Writing extensions
+
+An extension is a folder with an `extension.json` manifest, placed in
+`~/.config/tideline/extensions/` (or in a folder named by
+`TIDELINE_EXTENSIONS_PATH`). The manifest alone can declare effects (built
+from MLT filters), transitions, export formats and preset folders:
+
+```json
+{
+  "id": "me.look-pack",
+  "name": "Look Pack",
+  "version": "1.0.0",
+  "tideline": "0.0.3",
+  "effects": [
+    {"key": "soft_vignette", "label": "Soft Vignette", "category": "Stylize",
+     "services": ["frei0r.vignette"],
+     "params": [{"name": "aspect", "label": "Aspect", "default": 50, "min": 0, "max": 100,
+                 "unit": "%", "mlt": "aspect", "scale": 0.01}]}
+  ],
+  "transitions": [
+    {"key": "diagonal", "label": "Diagonal Wipe", "category": "Wipe", "wipe": "wipes/diagonal.png"}
+  ],
+  "export_formats": [
+    {"key": "mjpeg", "label": "Motion JPEG (MOV)", "ext": ".mov",
+     "video": {"f": "mov", "vcodec": "mjpeg"}, "audio": {"acodec": "pcm_s16le"}}
+  ],
+  "presets": "presets"
+}
+```
+
+- `id` is required and unique (lower case, digits, `.`, `-`, `_`); projects
+  store an extension's effects as `<id>/<key>`.
+- An effect lists MLT filter `services`; each parameter's `mlt` names the
+  filter property it drives, with `value × scale + offset` sent to MLT.
+  Parameter types are `float`, `int`, `bool`, `color`, `choice` and `text`,
+  and all of them can be keyframed. `melt -query filters` and
+  `melt -query filter=<name>` list the filters and their properties.
+- A `wipe` is a greyscale image: the incoming clip appears where it is black
+  first and white last. A transition can also `dip` through a colour or use a
+  `frei0r` transition.
+- An export format takes melt `avformat` options (`f`, `vcodec`, `acodec`,
+  `pix_fmt`…) and optional `quality` values for High, Medium and Low.
+
+For code, add `"main": "main.py"` and define `register(tl)`:
+
+```python
+def register(tl):
+    def count_clips(app):
+        n = sum(1 for _ in app.seq.all_clips()) if app.seq else 0
+        tl.status(f"{n} clips in this sequence")
+
+    tl.command("count", "Count Clips", count_clips, accel="<Ctrl><Alt>F6")
+    tl.on("project_saved", lambda path: print("saved", path))
+```
+
+`tl` can also add effects whose parameters you compute (`tl.effect(...,
+apply=fn)`), transitions, export formats and preset folders. It can make
+undoable timeline edits (`tl.edit`), show status messages, and keep settings
+between sessions (`tl.settings`, `tl.save_settings()`). Events include
+`project_saved`, `media_imported`, `sequence`, `selection`, `playhead` and
+`proxy_ready`. [docs/EXTENSIONS.md](docs/EXTENSIONS.md) has every field, the
+whole `tl` API, the event list and complete examples. Python extensions run
+with Tideline's own rights, so install only ones you trust;
+`TIDELINE_NO_EXTENSIONS=1` starts without any.
+
 ## Project files
 
 Projects are plain JSON (`.tideline`) that reference media by absolute path
 plus a path relative to the project file, so a folder containing both can be
 moved. An `.autosave` copy is written beside a saved project every two minutes
-while there are unsaved changes.
+while there are unsaved changes. Proxies are recorded the same way (absolute
+and relative path) and are not part of the undo history.
 
 ## Tests
 
 ```sh
-python -m unittest tests.test_core tests.test_engine tests.test_captions   # 106 tests, no display needed
-TIDELINE_DEBUG_SCRIPT=tests/ui_smoke.py python -m tideline   # 123 end-to-end UI checks
+python -m unittest tests.test_core tests.test_engine tests.test_captions \
+    tests.test_extensions tests.test_proxies          # 140 tests, no display needed
+TIDELINE_DEBUG_SCRIPT=tests/ui_smoke.py python -m tideline   # 141 end-to-end UI checks
 ```
 
 `test_captions` runs the caption pipeline with a stand-in recogniser.
+`test_extensions` loads manifests, Python extensions and every example in
+docs/EXTENSIONS.md, and renders extension effects and wipes. `test_proxies`
+makes real proxies with FFmpeg and checks that the preview plays them while
+exports read the originals.
 `test_engine` builds real MLT graphs from generated media and checks rendered
 pixels and audio, including every transition and every export preset. The UI
 script opens the real window and drives the same handlers the mouse and
@@ -225,6 +322,8 @@ tideline/
   procedural.py   seeded noise and waves behind the Animate effects
   timeremap.py    speed curves: clip frame -> source frame, MLT time maps
   captions.py     speech-to-text jobs, caption layout, SRT / WebVTT
+  proxies.py      proxy files: FFmpeg jobs, the job queue, lookup and staleness
+  extensions.py   extension discovery, manifests, the `tl` API, installing
   engine/
     builder.py    model -> MLT graph (rebuilt after each edit, producers cached)
     player.py     real-time playback into GTK through MLT's SDL audio consumer

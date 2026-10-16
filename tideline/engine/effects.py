@@ -1009,6 +1009,18 @@ def effects_in(category):
     return [d for d in EFFECTS.values() if d.category == category and not d.intrinsic and not d.hidden]
 
 
+def categories(kind):
+    """Effect categories for a track kind: the built-in ones, then any new
+    ones extensions brought."""
+    base = VIDEO_CATEGORIES if kind == "video" else AUDIO_CATEGORIES
+    extra = []
+    for d in EFFECTS.values():
+        if d.kind == kind and d.category not in base and d.category not in extra \
+                and not d.intrinsic and not d.hidden:
+            extra.append(d.category)
+    return base + extra
+
+
 # -- transitions -----------------------------------------------------------
 @dataclass
 class TransitionDef:
@@ -1041,6 +1053,16 @@ TRANSITIONS = {t.key: t for t in [
     TransitionDef("constant_gain", "Constant Gain", "audio", "Crossfade", "audio"),
     TransitionDef("exponential_fade", "Exponential Fade", "audio", "Crossfade", "audio"),
 ]}
+
+
+
+def transition_categories(kind):
+    out = []
+    for t in TRANSITIONS.values():
+        if t.kind == kind and t.category not in out:
+            out.append(t.category)
+    return out
+
 
 DEFAULT_VIDEO_TRANSITION = "cross_dissolve"
 DEFAULT_AUDIO_TRANSITION = "constant_power"

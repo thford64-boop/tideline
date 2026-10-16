@@ -443,6 +443,9 @@ class Project:
         self.sequences = {}          # id -> Sequence
         self.active_sequence_id = None
         self.settings = dict(DEFAULT_SETTINGS)   # frame shape and rates new sequences start with
+        # media id -> {"path": proxy file, "source": original's size|mtime}. Kept
+        # out of ``to_dict`` so undo never forgets a proxy; saved with the file.
+        self.proxies = {}
         self.dirty = False
 
     # -- media -----------------------------------------------------------
@@ -559,10 +562,20 @@ class Project:
         if self.active_sequence_id not in self.sequences:
             self.active_sequence_id = next(iter(self.sequences), None)
 
-    def save(self, path=None):
-        path = path or self.path
+    def file_dict(self, base):
+        """``to_dict`` plus what only the saved file holds: proxies, and
+        paths relative to ``base`` (the project's folder)."""
         data = self.to_dict()
-        base = os.path.dirname(os.path.abspath(path))
+        proxies = {}
+        for mid, entry in self.proxies.items():
+            if mid in self.media and entry.get("path"):
+                proxies[mid] = dict(entry)
+                try:
+                    proxies[mid]["relpath"] = os.path.relpath(entry["path"], base)
+                except ValueError:
+                    pass
+        if proxies:
+            data["proxies"] = proxies
         for m in data["media"]:
             if m.get("path"):
                 # Store a relative path next to the absolute one so a project
@@ -571,6 +584,11 @@ class Project:
                     m["relpath"] = os.path.relpath(m["path"], base)
                 except ValueError:
                     pass
+        return data
+
+    def save(self, path=None):
+        path = path or self.path
+        data = self.file_dict(os.path.dirname(os.path.abspath(path)))
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=1)
@@ -594,6 +612,15 @@ class Project:
                     m["path"] = candidate
         proj = cls()
         proj.load_dict(data)
+        for mid, entry in (data.get("proxies") or {}).items():
+            if not isinstance(entry, dict) or mid not in proj.media or not entry.get("path"):
+                continue
+            rel = entry.pop("relpath", None)
+            if not os.path.exists(entry["path"]) and rel:
+                candidate = os.path.normpath(os.path.join(base, rel))
+                if os.path.exists(candidate):
+                    entry["path"] = candidate
+            proj.proxies[mid] = {"path": entry["path"], "source": str(entry.get("source", ""))}
         proj.path = path
         proj.name = os.path.splitext(os.path.basename(path))[0]
         for m in proj.media.values():

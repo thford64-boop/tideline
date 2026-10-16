@@ -207,6 +207,12 @@ class MonitorPanel(Gtk.Box):
             bar.append(btn)
         self.safe_button = icon_button("safe", "Safe margins", self._toggle_safe, toggle=True, size=17)
         bar.append(self.safe_button)
+        self.proxy_button = icon_button("proxy", "Use proxies: play the small proxy copies instead of the "
+                                        "original media where they exist (Ctrl+Alt+P). Exports always use "
+                                        "the originals.", self._toggle_proxies, toggle=True, size=17)
+        self.proxy_button.set_active(app.prefs["use_proxies"])
+        bar.append(self.proxy_button)
+        app.on("proxies", self._sync_proxies)
         self.append(bar)
 
         app.on("frame", self._frame)
@@ -262,6 +268,13 @@ class MonitorPanel(Gtk.Box):
             self.refresh()
         else:
             self.app.set_playhead(frame)
+
+    def _toggle_proxies(self, btn):
+        self.app.set_use_proxies(btn.get_active())
+
+    def _sync_proxies(self):
+        if self.proxy_button.get_active() != self.app.prefs["use_proxies"]:
+            self.proxy_button.set_active(self.app.prefs["use_proxies"])
 
     def _toggle_safe(self, btn):
         self.view.safe_margins = btn.get_active()

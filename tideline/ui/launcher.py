@@ -8,6 +8,7 @@ import time
 from gi.repository import Gio, GLib, Gtk, Pango, PangoCairo
 
 from .. import APP_ID, APP_NAME, PROJECT_EXT, VERSION
+from .. import proxies as proxymod
 from .. import settings as st
 from ..model import DEFAULT_SETTINGS
 from . import theme
@@ -547,6 +548,29 @@ class PreferencesDialog(_Dialog):
         self.full = self.add_row("Open full screen", Gtk.Switch(halign=Gtk.Align.START))
         self.launch = self.add_row("Show project manager", Gtk.Switch(halign=Gtk.Align.START))
 
+        self.grid.attach(label("Proxies", css="heading", margin_top=10), 0, self._row, 2, 1)
+        self._row += 1
+        self.use_proxies = self.add_row("Use proxies", Gtk.Switch(halign=Gtk.Align.START))
+        self.use_proxies.set_tooltip_text("Play proxy copies instead of the originals where they exist "
+                                          "(also Ctrl+Alt+P or the button under the monitors)")
+        self.proxy_size = self.add_row("Proxy size", Gtk.DropDown.new_from_strings(
+            [n for _, n in proxymod.SIZES]))
+        self.proxy_codec = self.add_row("Proxy format", Gtk.DropDown.new_from_strings(
+            [n for _, n in proxymod.CODECS]))
+        self.proxy_where = self.add_row("Store proxies", Gtk.DropDown.new_from_strings(
+            [n for _, n in proxymod.LOCATIONS]))
+        self.proxy_where.set_tooltip_text("Next to the project: a Proxies folder beside the project file "
+                                          "(the cache folder until the project is saved)")
+        self.proxy_auto = self.add_row("Create on import", Gtk.DropDown.new_from_strings(
+            [n for _, n in proxymod.AUTO]))
+        pick = lambda options, value, fallback=0: next((i for i, (k, _) in enumerate(options) if k == value),
+                                                       fallback)
+        self.use_proxies.set_active(bool(p["use_proxies"]))
+        self.proxy_size.set_selected(pick(proxymod.SIZES, p["proxy_size"], 1))
+        self.proxy_codec.set_selected(pick(proxymod.CODECS, p["proxy_codec"]))
+        self.proxy_where.set_selected(pick(proxymod.LOCATIONS, p["proxy_location"]))
+        self.proxy_auto.set_selected(pick(proxymod.AUTO, p["proxy_auto"]))
+
         self._load(p)
         self.quality.connect("notify::selected", self._quality_picked)
         for w in (self.scale, self.scaling, self.threads, self.ui_fps):
@@ -606,7 +630,12 @@ class PreferencesDialog(_Dialog):
         p["layout"] = st.LAYOUTS[self.layout.get_selected()][0]
         p["fullscreen"] = self.full.get_active()
         p["show_launcher"] = self.launch.get_active()
+        p["proxy_size"] = proxymod.SIZES[self.proxy_size.get_selected()][0]
+        p["proxy_codec"] = proxymod.CODECS[self.proxy_codec.get_selected()][0]
+        p["proxy_location"] = proxymod.LOCATIONS[self.proxy_where.get_selected()][0]
+        p["proxy_auto"] = proxymod.AUTO[self.proxy_auto.get_selected()][0]
         p.save()
+        app.set_use_proxies(self.use_proxies.get_active())
         # A changed default resolution resets both monitors; otherwise a
         # resolution picked on one monitor stays.
         app.apply_playback_prefs(scale_monitors=rescale)

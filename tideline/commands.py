@@ -16,6 +16,12 @@ COMMANDS = [
     ("project_settings", "Project Settings…", "<Ctrl><Shift>p", "File"),
     ("import", "Import Media…", "<Ctrl>i", "File"),
     ("import_preset", "Import Preset…", "", "File"),
+    ("toggle_proxies", "Use Proxies", "<Ctrl><Alt>p", "File"),
+    ("create_proxies", "Create Proxies for Selection", "", "File"),
+    ("create_all_proxies", "Create Proxies for All Video", "", "File"),
+    ("attach_proxy", "Attach Proxy…", "", "File"),
+    ("delete_proxies", "Delete Proxies for Selection", "", "File"),
+    ("cancel_proxies", "Cancel Proxy Jobs", "", "File"),
     ("add_fonts", "Add Fonts…", "", "File"),
     ("export", "Export Media…", "<Ctrl>m", "File"),
     ("export_frame", "Export Frame…", "<Ctrl><Shift>e", "File"),
@@ -139,6 +145,8 @@ COMMANDS = [
     ("panel_history", "History", "", "Window"),
     ("toggle_safe_margins", "Safe Margins", "", "Window"),
     ("popout_monitor", "Pop-out Preview…", "<Ctrl><Shift>F11", "Window"),
+    ("extensions", "Manage Extensions…", "", "Extensions"),
+    ("extensions_folder", "Open Extensions Folder", "", "Extensions"),
     ("about", "About Tideline", "", "Help"),
 ]
 
@@ -168,7 +176,8 @@ MENUS = [
         ("New", ["new_project", None, "new_sequence", "new_bin", None, "new_title", "new_color_matte",
                  "new_black", "new_bars"]),
         "open_project", "project_manager", None, "save", "save_as", "project_settings", None, "import", "import_preset",
-        "add_fonts", None, "export", "export_frame", "import_captions", "export_captions",
+        "add_fonts", ("Proxies", ["toggle_proxies", None, "create_proxies", "create_all_proxies", "attach_proxy",
+                                  "delete_proxies", None, "cancel_proxies"]), None, "export", "export_frame", "import_captions", "export_captions",
         None, "quit"]),
     ("Edit", ["undo", "redo", None, "cut", "copy", "paste", "paste_insert", "delete", "ripple_delete",
               "duplicate", None, "select_all", "deselect_all", None, "preferences", "shortcuts"]),
@@ -190,5 +199,7 @@ MENUS = [
                 "toggle_fullscreen", "maximize_panel", None, "panel_project", "panel_source", "panel_timeline",
                 "panel_program", "panel_effect_controls", "panel_mixer", "panel_effects", "panel_history", None,
                 "toggle_safe_margins", "popout_monitor"]),
+    # Commands that extensions add are listed after these, one section per extension.
+    ("Extensions", ["extensions", "extensions_folder"]),
     ("Help", ["shortcuts", "about"]),
 ]

@@ -324,6 +324,8 @@ class ExportDialog(_Dialog):
         self.add_row("Output", row)
         self.summary = label("", css="faint")
         self.extra.append(self.summary)
+        if app.project.proxies:
+            self.extra.append(label("Renders from the original media, not from proxies.", css="faint"))
         self.progress = Gtk.ProgressBar(show_text=True, visible=False)
         self.extra.append(self.progress)
         self.format.connect("notify::selected", self._format_changed)

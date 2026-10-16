@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.0.3 (2026-10-16)
+
+- **Proxy editing**: play small, fast-decoding copies of large footage while
+  you edit, and export from the originals. Create proxies from the Project
+  panel (right-click ▸ Proxy) or File ▸ Proxies; FFmpeg makes them in the
+  background with progress in the status bar and a Proxy column in the
+  Project panel. Use Proxies (Ctrl+Alt+P, or the new button under each
+  monitor) switches between proxies and originals at any time. Preferences
+  choose the size (360p–1080p), MJPEG or H.264, where they are kept (beside
+  the project or in the cache) and automatic proxies on import for footage
+  above 1080p or 4K. Attach Proxy uses a file made elsewhere; a proxy stands
+  in for an offline original; a changed original makes its proxy stale.
+  Proxies are saved with the project but never in the undo history.
+- **Extensions**: folders in `~/.config/tideline/extensions` with an
+  `extension.json` manifest add effects (from MLT filters, with every
+  parameter keyframable), wipe transitions drawn by a greyscale image, dips
+  and frei0r transitions, export formats and preset folders, all without
+  code. A Python `main` file with `register(tl)` can also add commands with
+  shortcuts to the new Extensions menu, event hooks, effects with their own
+  parameter logic, undoable timeline edits and saved settings. Extensions ▸
+  Manage Extensions installs from a zip or folder, turns extensions on or
+  off, removes them, and shows what each added or why it failed. A failing
+  extension is rolled back completely. No extensions are bundled; the full
+  guide with syntax and examples is docs/EXTENSIONS.md.
+- Effect and transition categories in the Effects panel now include any new
+  ones extensions bring.
+
 ## 0.0.2 (2026-10-16)
 
 - **Time remapping** (Clip ▸ Time Remapping, Ctrl+Alt+R): a clip's speed

@@ -14,9 +14,11 @@ from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 
 from . import APP_ID, APP_NAME, PROJECT_EXT, VERSION  # noqa: E402
 from . import captions as captionsmod  # noqa: E402
+from . import extensions  # noqa: E402
 from . import fonts  # noqa: E402
 from . import keyframes as kf  # noqa: E402
 from . import presets  # noqa: E402
+from . import proxies  # noqa: E402
 from . import settings as settingsmod  # noqa: E402
 from . import timeremap  # noqa: E402
 from . import timecode as tc  # noqa: E402
@@ -70,6 +72,13 @@ class App(Adw.Application):
         self.popout = None
         self._ph_last = 0                 # when "playhead" was last emitted during playback
         self._ph_flush = 0
+        self.extensions = extensions.registry
+        self._extension_note = None       # load problems, shown once the window is up
+        # Proxy jobs report from their worker thread; hop to the main loop.
+        self.proxy_queue = proxies.Queue(
+            on_progress=lambda job, i, n: GLib.idle_add(self._proxy_progress, job, i, n),
+            on_done=lambda job, ok: GLib.idle_add(self._proxy_done, job, ok))
+        self._proxy_made = 0
 
     # -- events ----------------------------------------------------------
     def on(self, event, fn):
@@ -100,7 +109,8 @@ class App(Adw.Application):
         icons.add_search_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "icons"))
         Gtk.Window.set_default_icon_name(APP_ID)
         mltlib.init()
-        self.builder = Builder(self.project)
+        self._load_extensions()
+        self.builder = Builder(self.project, proxies=self.prefs["use_proxies"])
         self.program = Player("program")
         self.source = Player("source")
         self.apply_playback_prefs()
@@ -119,6 +129,7 @@ class App(Adw.Application):
         del_track.connect("activate", lambda a, p: self.seq and self.seq.track(p.get_string())
                           and self.delete_track(self.seq.track(p.get_string())))
         self.add_action(del_track)
+        self.extensions.attach(self)
         self.history.reset(self.project.to_dict(), "New Project")
         GLib.timeout_add_seconds(120, self._autosave)
 
@@ -148,6 +159,9 @@ class App(Adw.Application):
             self.program.on_levels = lambda l, r, playing: self.emit("levels", l, r, playing)
             self.source.on_levels = lambda l, r, playing: self.emit("levels", l, r, playing)
             self.window.present()
+            if self._extension_note:
+                self.status(self._extension_note, warn=True)
+                self._extension_note = None
             from . import devtools
             devtools.maybe_run(self)
         else:
@@ -183,6 +197,7 @@ class App(Adw.Application):
         self.activate()
 
     def do_shutdown(self):
+        self.proxy_queue.cancel()
         for p in (self.program, self.source):
             if p is not None:
                 p.close()
@@ -193,6 +208,9 @@ class App(Adw.Application):
         return self._keymap.get((Gdk.keyval_to_lower(keyval), int(mods)))
 
     def do(self, name):
+        ext_cmd = self.extensions.command(name)
+        if ext_cmd is not None:
+            return self.extensions.guard(ext_cmd.ext, ext_cmd.callback)(self)
         fn = getattr(self, "cmd_" + name, None)
         if fn is None:
             if name.startswith("tool_"):
@@ -1265,7 +1283,7 @@ class App(Adw.Application):
                 else:
                     changed = True
             if len(kept) != len(c.effects) or any(e.params or e.keyframes for e in c.effects
-                                                  if EFFECTS[e.type].intrinsic):
+                                                  if getattr(EFFECTS.get(e.type), "intrinsic", False)):
                 changed = True
             c.effects = kept
         if changed:
@@ -1385,7 +1403,7 @@ class App(Adw.Application):
         effects = list(clip.effects)
         i = effects.index(effect)
         j = i + delta
-        if 0 <= j < len(effects) and not EFFECTS[effects[j].type].intrinsic:
+        if 0 <= j < len(effects) and not getattr(EFFECTS.get(effects[j].type), "intrinsic", False):
             effects[i], effects[j] = effects[j], effects[i]
             clip.effects = effects
             self.commit("Reorder Effects")
@@ -1666,17 +1684,24 @@ class App(Adw.Application):
             GLib.idle_add(done, results, errors)
 
         def done(results, errors):
-            added = 0
+            fresh = []
             for item in results:
                 if item.id not in self.project.media:
                     item.parent = parent
                     self.project.add_media(item)
-                    added += 1
+                    fresh.append(item)
+            added = len(fresh)
             if added:
                 self.history.push(f"Import {added} Item(s)", self.project.to_dict())
                 self.project.dirty = True
                 self.emit("media")
                 self.emit("history")
+                self.emit("media_imported", fresh)
+                limit = int(self.prefs["proxy_auto"] or 0)
+                if limit:
+                    big = [m for m in fresh if proxies.eligible(m) and min(m.width, m.height) >= limit]
+                    if big:
+                        self.create_proxies(big, quiet=True)
             msg = f"Imported {added} item(s)" if added else "Nothing new to import"
             if errors:
                 msg += f" — skipped {len(errors)}: {errors[0]}"
@@ -1938,8 +1963,9 @@ class App(Adw.Application):
         for p in (self.program, self.source):
             p.pause()
         self.source.set_producer(None, None)
+        self.proxy_queue.cancel()
         self.project = project
-        self.builder = Builder(project)
+        self.builder = Builder(project, proxies=self.prefs["use_proxies"])
         self.graph = None
         self.source_media = None
         self.selection, self.selected_transition, self.selected_gap = [], None, None
@@ -2029,6 +2055,7 @@ class App(Adw.Application):
         self.prefs.add_recent(self.project.path)
         self.status(f"Saved {os.path.basename(self.project.path)}")
         self.emit("project")
+        self.emit("project_saved", self.project.path)
         if then:
             then()
 
@@ -2048,8 +2075,9 @@ class App(Adw.Application):
         if self.project.dirty and self.project.path:
             try:
                 import json
+                base = os.path.dirname(os.path.abspath(self.project.path))
                 with open(self.project.path + ".autosave", "w", encoding="utf-8") as fh:
-                    json.dump(self.project.to_dict(), fh)
+                    json.dump(self.project.file_dict(base), fh)
             except OSError:
                 pass
         return True
@@ -2119,6 +2147,214 @@ class App(Adw.Application):
             self.emit(ev)
         self.status(f"Relinked {item.name}")
 
+    # -- proxies ---------------------------------------------------------
+    def _proxy_items(self, items):
+        """Video items among ``items``, looking inside bins."""
+        out, stack, seen = [], list(items), set()
+        while stack:
+            m = stack.pop(0)
+            if m is None or m.id in seen:
+                continue
+            seen.add(m.id)
+            if m.is_bin:
+                stack.extend(self.project.children(m.id))
+            elif proxies.eligible(m):
+                out.append(m)
+        return out
+
+    def proxy_targets(self):
+        """Video items the proxy commands act on: the Project panel's
+        selection when it has focus, else the media of the selected clips."""
+        panel = self.window.project_panel.selected_items() if self.window else []
+        clips = [self.project.media.get(c.media_id) for _, c in self.selected_clips()]
+        first, second = (panel, clips) if self.focus == "project" else (clips, panel)
+        return self._proxy_items(first) or self._proxy_items(second)
+
+    def proxy_state(self, media):
+        """Text for the Proxy column: size, queued, progress or nothing."""
+        state = self.proxy_queue.state(media.id)
+        if state == "creating":
+            job = self.proxy_queue.current
+            return f"Creating {int((job.progress if job else 0) * 100)}%"
+        if state == "queued":
+            return "Queued"
+        path = proxies.find(self.project, media)
+        if not path:
+            return ""
+        return "Proxy" if self.prefs["use_proxies"] else "Proxy (off)"
+
+    def create_proxies(self, items, quiet=False):
+        """Queue proxies for the video items among ``items``. Returns how many."""
+        p = self.prefs
+        size, codec, where = int(p["proxy_size"]), p["proxy_codec"], p["proxy_location"]
+        jobs, small, offline, have = [], 0, 0, 0
+        for m in self._proxy_items(items):
+            if m.offline or not os.path.exists(m.path):
+                offline += 1
+            elif proxies.find(self.project, m):
+                have += 1
+            elif not proxies.worth_it(m, size):
+                small += 1
+            else:
+                jobs.append(proxies.Job(m, proxies.target_path(self.project, m, where), size, codec))
+        added = self.proxy_queue.submit(jobs)
+        if not quiet or added:
+            notes = [f"{n} {why}" for n, why in ((have, "already have one"), (small, f"are {size}p or smaller"),
+                                                 (offline, "are offline")) if n]
+            head = f"Creating {added} prox{'y' if added == 1 else 'ies'}" if added else "No proxies to create"
+            self.status(head + (" — " + ", ".join(notes) if notes else ""), warn=not added)
+        self.emit("proxies")
+        return added
+
+    def cmd_create_proxies(self):
+        items = self.proxy_targets()
+        if not items:
+            return self.status("Select video in the Project panel (or clips in the timeline) first.", warn=True)
+        self.create_proxies(items)
+
+    def cmd_create_all_proxies(self):
+        self.create_proxies(list(self.project.media.values()))
+
+    def cmd_delete_proxies(self):
+        items = self.proxy_targets()
+        if not items:
+            return self.status("Select video in the Project panel (or clips in the timeline) first.", warn=True)
+        n = 0
+        for m in items:
+            self.proxy_queue.cancel(m.id)
+            n += proxies.detach(self.project, m, delete_file=True)
+        self.project.dirty = True
+        self._proxies_changed()
+        self.status(f"Deleted {n} prox{'y' if n == 1 else 'ies'}")
+
+    def cmd_cancel_proxies(self):
+        busy = self.proxy_queue.busy()
+        self.proxy_queue.cancel()
+        self.emit("proxies")
+        self.status("Proxy jobs cancelled" if busy else "No proxy jobs are running")
+
+    def cmd_attach_proxy(self):
+        items = self.proxy_targets()
+        if not items:
+            return self.status("Select a video item in the Project panel first.", warn=True)
+        from .ui.widgets import open_files
+        media = items[0]
+        open_files(self.window, f"Attach Proxy to “{media.name}”", lambda paths: self.attach_proxy(media, paths[0]),
+                   multiple=False)
+
+    def attach_proxy(self, media, path):
+        """Use an existing file as the proxy of ``media``."""
+        try:
+            probe = mediamod.probe(path)
+        except mediamod.ProbeError as exc:
+            return self.status(str(exc), warn=True)
+        if not probe.has_video or (media.has_audio and not probe.has_audio):
+            return self.status("A proxy needs the same kind of streams as the original.", warn=True)
+        if media.duration and abs(probe.duration - media.duration) > max(0.5, 2.0 / max(1.0, media.fps)):
+            return self.status(f"The proxy lasts {probe.duration:.2f} s but the original {media.duration:.2f} s.",
+                               warn=True)
+        self.proxy_queue.cancel(media.id)
+        proxies.attach(self.project, media, path)
+        self.project.dirty = True
+        self._proxies_changed()
+        self.status(f"Attached proxy to {media.name}")
+
+    def cmd_toggle_proxies(self):
+        self.set_use_proxies(not self.prefs["use_proxies"])
+
+    def set_use_proxies(self, on):
+        on = bool(on)
+        if on == self.prefs["use_proxies"]:
+            return
+        self.prefs["use_proxies"] = on
+        self.prefs.save()
+        self._proxies_changed()
+        self.status("Playing proxies where available" if on else "Playing original media")
+
+    def _proxies_changed(self):
+        self.builder.proxies = self.prefs["use_proxies"]
+        self.queue_rebuild()
+        self._reload_source()
+        self.emit("proxies")
+
+    def _reload_source(self):
+        """Re-open the source monitor's item in place (e.g. its proxy changed)."""
+        media = self.source_media
+        if media is None or media.kind != "video":
+            return
+        try:
+            profile, producer, length, refs = self.builder.build_media(media, self.seq)
+        except Exception:
+            return
+        self.source.set_producer(producer, profile, length, position=self.source.position, refs=refs)
+        self.source.refresh()
+
+    def _proxy_progress(self, job, index, total):
+        self.status(f"Creating proxy {index} of {total}: {job.name} — {int(job.progress * 100)}%")
+        self.emit("proxy_progress", job)
+        return False
+
+    def _proxy_done(self, job, ok):
+        media = self.project.media.get(job.media_id)
+        if ok and media is not None and media.path == job.src:
+            proxies.attach(self.project, media, job.dest)
+            self.project.dirty = True
+            self._proxy_made += 1
+            if self.prefs["use_proxies"]:
+                self.builder.proxies = True
+                self.queue_rebuild()
+                if self.source_media is media:
+                    self._reload_source()
+            self.emit("proxy_ready", media)
+        elif not ok and not job.cancelled:
+            self.status(f"Proxy for {job.name} failed: {job.error}", warn=True)
+        if not self.proxy_queue.busy():
+            if self._proxy_made:
+                self.status(f"{self._proxy_made} prox{'y' if self._proxy_made == 1 else 'ies'} ready")
+            self._proxy_made = 0
+        self.emit("proxies")
+        return False
+
+    # -- extensions ------------------------------------------------------
+    def _load_extensions(self):
+        if os.environ.get("TIDELINE_NO_EXTENSIONS"):
+            return
+        dirs = extensions.search_dirs()
+        if os.environ.get("TIDELINE_DEBUG_SCRIPT"):
+            dirs = dirs[1:]                       # test runs only see TIDELINE_EXTENSIONS_PATH
+        self.extensions.load(dirs, disabled=set(self.prefs["disabled_extensions"]))
+        failed = [e for e in self.extensions.extensions if e.error]
+        if failed:
+            first = failed[0]
+            self._extension_note = (f"Extension “{first.name}” did not load: {first.error}"
+                                    + (f" (and {len(failed) - 1} more; see Extensions ▸ Manage Extensions)"
+                                       if len(failed) > 1 else ""))
+
+    def add_extension_command(self, cmd):
+        if self.lookup_action(cmd.action) is None:
+            action = Gio.SimpleAction.new(cmd.action, None)
+            action.connect("activate", lambda a, p, n=cmd.action: self.do(n))
+            self.add_action(action)
+        if cmd.accel:
+            ok, keyval, mods = Gtk.accelerator_parse(cmd.accel)
+            key = (Gdk.keyval_to_lower(keyval), int(mods))
+            if ok and key not in self._keymap:
+                self._keymap[key] = cmd.action
+
+    def remove_extension_command(self, cmd):
+        self.remove_action(cmd.action)
+        for key in [k for k, v in self._keymap.items() if v == cmd.action]:
+            del self._keymap[key]
+
+    def cmd_extensions(self):
+        from .ui.extensions_dialog import ExtensionsDialog
+        ExtensionsDialog(self).present()
+
+    def cmd_extensions_folder(self):
+        folder = extensions.user_dir()
+        os.makedirs(folder, exist_ok=True)
+        Gtk.FileLauncher.new(Gio.File.new_for_path(folder)).launch(self.window, None, None)
+
     # -- misc ------------------------------------------------------------
     def cmd_shortcuts(self):
         from .ui.dialogs import ShortcutsWindow
@@ -2132,4 +2368,5 @@ class App(Adw.Application):
         dlg.present(self.window)
 
     def is_audio_transition(self, key):
-        return key in AUDIO_TRANSITIONS
+        tdef = TRANSITIONS.get(key)
+        return tdef.kind == "audio" if tdef is not None else key in AUDIO_TRANSITIONS

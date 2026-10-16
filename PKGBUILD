@@ -1,6 +1,6 @@
 # Local package build: run `makepkg -si` in this directory.
 pkgname=tideline
-pkgver=0.0.2
+pkgver=0.0.3
 pkgrel=1
 pkgdesc="Non-linear video editor built on MLT and GTK 4"
 arch=('any')
@@ -38,4 +38,5 @@ package() {
   install -Dm644 packaging/org.tideline.Tideline.xml \
     "$pkgdir/usr/share/mime/packages/org.tideline.Tideline.xml"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 docs/EXTENSIONS.md "$pkgdir/usr/share/doc/$pkgname/EXTENSIONS.md"
 }

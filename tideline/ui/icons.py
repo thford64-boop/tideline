@@ -531,6 +531,23 @@ def _captions(cr):
     cr.stroke()
 
 
+def _proxy(cr):
+    # a large frame with a small copy of it in the corner
+    cr.rectangle(3.5, 5, 13, 10)
+    cr.stroke()
+    cr.rectangle(12.5, 12, 8, 6.5)
+    cr.fill()
+
+
+def _puzzle(cr):
+    _line(cr, (5, 8), (9, 8))
+    cr.arc(12, 8, 2.2, math.pi, 0)
+    _line(cr, (14.2, 8), (19, 8), (19, 12))
+    cr.arc_negative(19, 14.5, 2.2, -math.pi / 2, math.pi / 2)
+    _line(cr, (19, 16.7), (19, 20), (5, 20), (5, 8))
+    cr.stroke()
+
+
 ICONS = {
     "select": _select, "track_fwd": _track_fwd, "ripple": _ripple, "roll": _roll, "rate": _rate,
     "razor": _razor, "slip": _slip, "slide": _slide, "pen": _pen, "hand": _hand, "zoom": _zoom,
@@ -545,7 +562,7 @@ ICONS = {
     "film": _film, "wave": _wave, "image": _image, "sequence": _sequence, "title": _title,
     "swatch": _swatch, "fx": _fx, "search": _search, "lock": _lock, "unlock": _unlock,
     "eye": _eye, "eye_off": _eye_off, "curve": _curve, "fullscreen": _fullscreen, "restore": _restore,
-    "popout": _popout, "captions": _captions,
+    "popout": _popout, "captions": _captions, "proxy": _proxy, "puzzle": _puzzle,
 }
 
 MEDIA_ICONS = {"video": "film", "audio": "wave", "image": "image", "sequence": "sequence",

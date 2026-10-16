@@ -19,6 +19,7 @@ from .model import Effect
 PRESET_EXT = ".tlpreset"
 PRESET_FORMAT = 1
 BUILTIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "presets")
+EXTRA_DIRS = []      # read-only preset folders that extensions add
 _INTERPS = {key for key, _ in kf.INTERPS}
 
 
@@ -218,7 +219,8 @@ _cache = {}
 def library():
     """[(path, preset, builtin)] for every preset that loads, built-ins first."""
     out = []
-    for folder, builtin in ((BUILTIN_DIR, True), (user_dir(), False)):
+    folders = [(BUILTIN_DIR, True)] + [(d, True) for d in EXTRA_DIRS] + [(user_dir(), False)]
+    for folder, builtin in folders:
         try:
             names = sorted(os.listdir(folder), key=str.lower)
         except OSError:
@@ -235,6 +237,12 @@ def library():
                 continue
             out.append((path, _cache[path][1], builtin))
     return out
+
+
+def is_builtin(path):
+    """True for presets that ship with Tideline or an extension (read-only)."""
+    folder = os.path.dirname(os.path.abspath(path))
+    return folder in [os.path.abspath(d) for d in [BUILTIN_DIR] + EXTRA_DIRS]
 
 
 def file_name(name):

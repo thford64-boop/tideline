@@ -28,7 +28,8 @@ DEFAULTS = dict(QUALITY_PRESETS["balanced"], quality="balanced", setup_done=Fals
                 fullscreen=True, show_launcher=True, recent=[], project_dir="",
                 popout_monitor="", popout_timecode=False,
                 caption_engine="", caption_model="base", caption_language="auto", caption_chars=42,
-                caption_lines=2)
+                caption_lines=2, use_proxies=True, proxy_size=540, proxy_codec="mjpeg",
+                proxy_location="project", proxy_auto=0, disabled_extensions=[])
 
 
 def config_dir():

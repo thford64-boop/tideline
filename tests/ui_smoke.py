@@ -17,13 +17,17 @@ import traceback
 
 from gi.repository import Gdk, GdkPixbuf, GLib
 
+import json
+
 from tideline import keyframes as kf
+from tideline import proxies
 from tideline.engine import media as mediamod
 from tideline.engine.player import Player
 from tideline.ui.timeline import HEADER_W
 
 TMP = tempfile.mkdtemp(prefix="tideline-ui-")
 mediamod.CACHE_DIR = os.path.join(TMP, "cache")          # keep test thumbnails out of ~/.cache
+proxies.CACHE_DIR = os.path.join(TMP, "proxies")
 results = []
 
 
@@ -40,6 +44,8 @@ def make_media():
                          f"{TMP}/c.mp4"], check=True, stdin=subprocess.DEVNULL)
     subprocess.run(ff + [*tone(220, 20), "-ac", "2", f"{TMP}/music.wav"], check=True, stdin=subprocess.DEVNULL)
     shutil.copy(f"{TMP}/c.mp4", f"{TMP}/c_moved.mp4")
+    subprocess.run(ff + ["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=4", *tone(330, 4),
+                         *x264, *aac, f"{TMP}/hd.mp4"], check=True, stdin=subprocess.DEVNULL)
 
 
 class Mods:
@@ -55,6 +61,11 @@ class Mods:
 
     def get_current_button(self):
         return self.button
+
+
+def app_effects():
+    from tideline.engine.effects import EFFECTS
+    return EFFECTS
 
 
 def check(name, cond, detail=""):
@@ -698,6 +709,89 @@ def run(app):
     app.do("undo")
     yield 400
     check("undo removes the caption track", not app.caption_tracks() and len(app.seq.video_tracks) == tracks_before)
+
+    # ---- proxies ------------------------------------------------------------
+    imported = []
+    app.import_paths([f"{TMP}/hd.mp4"], then=imported.extend)
+    for _ in range(50):
+        if imported:
+            break
+        yield 100
+    hd = imported[0]
+    app.prefs["proxy_size"] = 360
+    app.create_proxies([hd])
+    check("a proxy job is queued", app.proxy_queue.busy(hd.id) and app.proxy_state(hd) in ("Queued", "Creating 0%"),
+          app.proxy_state(hd))
+    for _ in range(150):
+        if not app.proxy_queue.busy():
+            break
+        yield 100
+    yield 300
+    proxy = proxies.find(app.project, hd)
+    check("the proxy is made and recorded", proxy is not None and os.path.exists(proxy), app.project.proxies)
+    check("the proxy is 360 lines high", proxy and mediamod.probe(proxy).height == 360)
+    check("the preview reads the proxy", app.builder.source_path(hd) == (proxy, True))
+    check("the Project panel shows the proxy", app.proxy_state(hd) == "Proxy")
+    app.do("toggle_proxies")
+    yield 300
+    check("Use Proxies switches the preview to the original",
+          not app.prefs["use_proxies"] and app.builder.source_path(hd) == (hd.path, False))
+    check("the monitor's proxy button follows", not win.program_monitor.proxy_button.get_active())
+    win.program_monitor.proxy_button.set_active(True)
+    yield 300
+    check("the monitor's proxy button switches proxies back on", app.prefs["use_proxies"] and app.builder.proxies)
+    app.create_proxies([hd])
+    check("an item with a proxy is not queued again", not app.proxy_queue.busy())
+    pp = win.project_panel
+    idx = next(i for i in range(pp.store.get_n_items()) if pp.store.get_item(i).item.id == hd.id)
+    pp.selection.unselect_all()
+    pp.selection.select_item(idx, True)
+    app.focus = "project"
+    app.do("delete_proxies")
+    yield 300
+    check("Delete Proxies removes the file and the record", not os.path.exists(proxy) and hd.id not in app.project.proxies)
+    app.attach_proxy(hd, f"{TMP}/hd.mp4")
+    check("an existing file can be attached as a proxy", proxies.find(app.project, hd) == f"{TMP}/hd.mp4")
+    app.project.remove_media(hd.id)
+    app.emit("media")
+    yield 200
+
+    # ---- extensions ---------------------------------------------------------
+    ext_dir = os.path.join(TMP, "extensions", "smoke")
+    os.makedirs(ext_dir)
+    with open(os.path.join(ext_dir, "extension.json"), "w") as fh:
+        json.dump({"id": "smoke.test", "name": "Smoke Test", "main": "main.py",
+                   "effects": [{"key": "dim", "label": "Smoke Dim", "category": "Smoke",
+                                "services": ["brightness"],
+                                "params": [{"name": "level", "default": 50, "mlt": "level", "scale": 0.01}]}]}, fh)
+    with open(os.path.join(ext_dir, "main.py"), "w") as fh:
+        fh.write("ran = []\n"
+                 "def register(tl):\n"
+                 "    tl.command('ping', 'Ping', lambda app: ran.append(app), accel='<Ctrl><Alt>F8')\n"
+                 "    tl.on('project_saved', lambda path: ran.append(path))\n")
+    app.extensions.load([os.path.dirname(ext_dir)])
+    ext = app.extensions.get("smoke.test")
+    check("an extension loads in the running app", ext is not None and ext.loaded, ext and ext.error)
+    app.emit("presets")
+    yield 200
+    check("its effect is in the effects registry", "smoke.test/dim" in app_effects())
+    check("its effect category is listed", "Smoke" in [c for c, _ in win.effects_panel._tree()[1][1]])
+    app.do("ext-smoke-test-ping")
+    check("its command runs from the action", ext.module.ran and ext.module.ran[0] is app)
+    keyval = Gdk.keyval_from_name("F8")
+    check("its shortcut is bound", app.key_command(keyval, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK)
+          == "ext-smoke-test-ping")
+    app.do("extensions")
+    yield 300
+    dlg = next((w for w in app.get_windows() if w.get_title() == "Extensions"), None)
+    check("Manage Extensions opens", dlg is not None)
+    if dlg is not None:
+        dlg.close()
+    app.extensions.unload_all()
+    check("unloading removes the effect and command", "smoke.test/dim" not in app_effects()
+          and app.lookup_action("ext-smoke-test-ping") is None)
+    app.emit("presets")
+    yield 200
 
     # ---- nesting, project panel, persistence --------------------------------
     first = app.project.media_for_sequence(app.seq.id)

@@ -7,7 +7,7 @@ from gi.repository import Gdk, GLib, GObject, Gtk, Pango, PangoCairo
 from .. import presets
 from .. import timecode as tc
 from ..commands import TOOLS
-from ..engine.effects import AUDIO_CATEGORIES, TRANSITIONS, VIDEO_CATEGORIES, effects_in
+from ..engine.effects import TRANSITIONS, categories, effects_in, transition_categories
 from ..model import aspect_name
 from . import theme
 from .icons import Icon
@@ -229,10 +229,10 @@ class EffectsPanel(Gtk.Box):
         saved = lambda builtin: [("preset", path, p["name"]) for path, p, b in library if b == builtin]
         return [
             ("Presets", [("My Presets", saved(False)), ("Built-in", saved(True))]),
-            ("Video Effects", [(c, fx(c)) for c in VIDEO_CATEGORIES]),
-            ("Audio Effects", [(c, fx(c)) for c in AUDIO_CATEGORIES]),
-            ("Video Transitions", [(c, tr("video", c)) for c in ("Dissolve", "Wipe", "Slide")]),
-            ("Audio Transitions", [("Crossfade", tr("audio", "Crossfade"))]),
+            ("Video Effects", [(c, fx(c)) for c in categories("video")]),
+            ("Audio Effects", [(c, fx(c)) for c in categories("audio")]),
+            ("Video Transitions", [(c, tr("video", c)) for c in transition_categories("video")]),
+            ("Audio Transitions", [(c, tr("audio", c)) for c in transition_categories("audio")]),
         ]
 
     def refresh(self):
@@ -271,7 +271,7 @@ class EffectsPanel(Gtk.Box):
         row = Gtk.Box(spacing=6, margin_start=36)
         row.append(Icon({"effect": "fx", "preset": "curve"}.get(kind, "roll"), 14))
         row.append(label(text, ellipsize=True, hexpand=True))
-        if kind == "preset" and not key.startswith(presets.BUILTIN_DIR):
+        if kind == "preset" and not presets.is_builtin(key):
             row.append(icon_button("trash", "Delete this preset", lambda b: self._delete(key, text), size=12,
                                    css="kf-button"))
         row.payload = (kind, key)

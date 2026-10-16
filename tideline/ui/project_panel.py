@@ -55,6 +55,7 @@ class ProjectPanel(Gtk.Box):
         self.app = app
         self.current_bin = None
         self._thumbs = {}            # bound Gtk.Picture -> media item
+        self._proxy_cells = {}       # bound Proxy column label -> media item
 
         top = Gtk.Box(spacing=4, margin_start=6, margin_end=6, margin_top=5, margin_bottom=5)
         self.up_btn = icon_button("up", "Up to parent bin", lambda b: self.enter(self._parent_of_current()))
@@ -105,6 +106,9 @@ class ProjectPanel(Gtk.Box):
         for name, fn in (("open", self._open_selected), ("sequence", self._sequence_from_selected),
                          ("rename", self.rename_selected), ("delete", self.delete_selected),
                          ("relink", self._relink_selected),
+                         ("proxy_create", lambda: app.create_proxies(self.selected_items())),
+                         ("proxy_attach", lambda: self._focus_do("attach_proxy")),
+                         ("proxy_delete", lambda: self._focus_do("delete_proxies")),
                          ("root", lambda: self._move_to(None))):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", lambda a, p, f=fn: f())
@@ -124,6 +128,8 @@ class ProjectPanel(Gtk.Box):
             app.on(ev, self.refresh)
         app.on("sequence", self._sequence_changed)
         app.on("thumbs", self._thumbs_ready)
+        app.on("proxies", self._proxies_changed)
+        app.on("proxy_progress", lambda job: self._proxies_changed())
         self.refresh()
 
     # -- views -----------------------------------------------------------
@@ -194,6 +200,33 @@ class ProjectPanel(Gtk.Box):
         f.connect("bind", bind)
         return f
 
+    def _proxy_cell(self):
+        def setup(factory, li):
+            li.set_child(Gtk.Label(xalign=0.0, ellipsize=3))
+            li.get_child().add_css_class("dim")
+
+        def bind(factory, li):
+            m = li.get_item().item
+            self._proxy_cells[li.get_child()] = m
+            li.get_child().set_text(self.app.proxy_state(m) if m.kind == "video" else "")
+
+        def unbind(factory, li):
+            self._proxy_cells.pop(li.get_child(), None)
+
+        f = Gtk.SignalListItemFactory()
+        f.connect("setup", setup)
+        f.connect("bind", bind)
+        f.connect("unbind", unbind)
+        return f
+
+    def _proxies_changed(self):
+        for lab, m in list(self._proxy_cells.items()):
+            lab.set_text(self.app.proxy_state(m) if m.kind == "video" else "")
+
+    def _focus_do(self, command):
+        self.app.focus = "project"
+        self.app.do(command)
+
     def _controllers(self, view):
         click = Gtk.GestureClick(button=3)
         click.connect("pressed", lambda g, n, x, y: self._context_menu(view, x, y))
@@ -211,7 +244,8 @@ class ProjectPanel(Gtk.Box):
                 ("Frame Rate", self._text_cell(_fps_text), False, 78),
                 ("Duration", self._text_cell(lambda m: _duration_text(m, project())), False, 92),
                 ("Video", self._text_cell(_video_text), False, 128),
-                ("Audio", self._text_cell(_audio_text), False, 112)]
+                ("Audio", self._text_cell(_audio_text), False, 112),
+                ("Proxy", self._proxy_cell(), False, 96)]
         for title, factory, expand, width in cols:
             col = Gtk.ColumnViewColumn(title=title, factory=factory, expand=expand, resizable=True)
             if width:
@@ -429,6 +463,12 @@ class ProjectPanel(Gtk.Box):
             b.append("Rename…", "proj.rename")
             if any(m.path for m in items):
                 b.append("Relink Media…", "proj.relink")
+            if any(m.kind == "video" or m.is_bin for m in items):
+                proxy = Gio.Menu()
+                proxy.append("Create Proxies", "proj.proxy_create")
+                proxy.append("Attach Proxy…", "proj.proxy_attach")
+                proxy.append("Delete Proxies", "proj.proxy_delete")
+                b.append_submenu("Proxy", proxy)
             labels = Gio.Menu()
             for i, (name, _) in enumerate(LABELS):
                 labels.append(name, f"proj.label({i})")
