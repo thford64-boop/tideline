@@ -25,7 +25,10 @@ UI_RATES = [15, 20, 30, 60]
 LAYOUTS = [("editing", "Editing"), ("effects", "Effects"), ("audio", "Audio")]
 
 DEFAULTS = dict(QUALITY_PRESETS["balanced"], quality="balanced", setup_done=False, layout="editing",
-                fullscreen=True, show_launcher=True, recent=[], project_dir="")
+                fullscreen=True, show_launcher=True, recent=[], project_dir="",
+                popout_monitor="", popout_timecode=False,
+                caption_engine="", caption_model="base", caption_language="auto", caption_chars=42,
+                caption_lines=2)
 
 
 def config_dir():

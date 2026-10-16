@@ -165,6 +165,9 @@ button.destructive-action {{ background: {DANGER}; color: #ffffff; border: none;
 .error-text {{ color: {DANGER}; }}
 .warning-text {{ color: {WARN}; }}
 .key-cap {{ background: {BG3}; border: 1px solid {BG4}; border-radius: 4px; padding: 1px 6px; font-family: monospace; font-size: 11px; }}
+.popout-bar {{ background: {BG2}; border-bottom: 1px solid {LINE}; }}
+window.fullscreen-output, window.fullscreen-output .popout {{ background: #000000; }}
+.caption-progress {{ min-height: 6px; }}
 """
 
 

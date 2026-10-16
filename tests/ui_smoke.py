@@ -593,6 +593,112 @@ def run(app):
     check("overwrite places the marked range at the playhead",
           (c0.start, c0.duration, c0.in_point, seq.playhead) == (0, 90, 60, 90))
 
+    # ---- time remapping --------------------------------------------------------
+    from tideline.engine.effects import EFFECTS
+    vid = next(c for c in v(0).clips if c.link_id and any(o.link_id == c.link_id for o in a(0).clips))
+    vid_id = vid.id
+    live = lambda: app.seq.find_clip(vid_id)[1]
+    partner = lambda: next(c for _, c in app.seq.all_clips() if c.link_id == live().link_id and c.id != vid_id)
+    app.select([vid_id])
+    yield 100
+    app.do("time_remap")
+    yield 400
+    check("Time Remapping goes on the clip and its linked audio",
+          live().effect("time_remap") is not None and partner().effect("time_remap") is not None)
+    win.show_panel("effect_controls")
+    win.effect_controls.sync()
+    yield 200
+    check("Effect Controls shows the speed curve",
+          any(r.effect.type == "time_remap" for r in win.effect_controls.rows))
+    speed = EFFECTS["time_remap"].param("speed")
+    app.set_playhead(live().start + 10)
+    app.toggle_animation(live(), live().effect("time_remap"), speed, True)
+    app.set_playhead(live().start + 40)
+    app.set_param(live(), live().effect("time_remap"), speed, 25.0)
+    yield 500
+    keys = live().effect("time_remap").keyframes["speed"]
+    shift = partner().in_point - live().in_point
+    check("a speed ramp is keyframed and mirrored on the linked audio",
+          [k[1] for k in keys] == [100.0, 25.0]
+          and [k[0] - shift for k in partner().effect("time_remap").keyframes["speed"]] == [k[0] for k in keys],
+          keys)
+    check("the remapped clip plays through MLT's time remap",
+          any("remap" in k for k in app.builder.cache.items) and app.graph is not None)
+    app.do("time_remap")
+    yield 300
+    check("Time Remapping switches off again for both halves",
+          live().effect("time_remap") is None and partner().effect("time_remap") is None)
+
+    # ---- pop-out preview -------------------------------------------------------
+    app.focus = "timeline"
+    app.do("popout_monitor")
+    yield 500
+    pop = app.popout
+    check("the pop-out preview opens with the program picture",
+          pop is not None and pop.get_visible() and pop.view.texture is not None)
+    check("the pop-out preview lists the displays", pop.display_menu.get_model().get_n_items() >= 1)
+    before = pop.view.texture
+    app.set_playhead(120)
+    yield 400
+    check("the pop-out preview follows the playhead", pop.view.texture is not before)
+    pop.go_fullscreen()
+    yield 800
+    check("the pop-out preview goes full screen without its controls",
+          pop.is_fullscreen() and not pop.bar.get_visible(), pop.is_fullscreen())
+    pop._key(None, Gdk.KEY_Escape, 0, Gdk.ModifierType(0))
+    yield 600
+    check("Esc returns the pop-out preview to a window", not pop.is_fullscreen() and pop.bar.get_visible())
+    pop._key(None, Gdk.KEY_space, 0, Gdk.ModifierType(0))
+    yield 300
+    playing = app.program.playing
+    app.program.pause()
+    check("keys in the pop-out preview drive playback", playing)
+    pop.feed_menu.set_selected(1)
+    yield 100
+    check("the pop-out preview can show the Source monitor", pop.feed == "source")
+    pop.close()
+    yield 300
+    check("closing the pop-out preview stops its updates",
+          app.popout is None and pop._frame not in app._listeners["frame"])
+
+    # ---- captions --------------------------------------------------------------
+    from tideline import captions as capmod
+    tracks_before = len(app.seq.video_tracks)
+    app.add_captions([capmod.Cue(0.5, 1.5, "Hello world"), capmod.Cue(2.0, 3.0, "A second caption")], 0)
+    yield 500
+    ctracks = app.caption_tracks()
+    cclips = ctracks[0].clips if ctracks else []
+    check("captions land on a new caption track as titles",
+          len(app.seq.video_tracks) == tracks_before + 1 and [(c.start, c.end) for c in cclips] == [(15, 45), (60, 90)],
+          [(c.start, c.end) for c in cclips])
+    check("each caption renders as a title",
+          all(c.effect("text") is not None and app.graph.filters.get(c.effect("text").id) for c in cclips))
+    first_text = cclips[0].effect("text")
+    app.set_param(cclips[0], first_text, EFFECTS["text"].param("text"), "Hello, world!")
+    yield 200
+    srt = f"{TMP}/captions.srt"
+    capmod.save(app.caption_cues(), srt)
+    back = capmod.load(srt)
+    check("edited captions export to SRT", [(c.start, c.end, c.text) for c in back] ==
+          [(0.5, 1.5, "Hello, world!"), (2.0, 3.0, "A second caption")], back)
+    app.add_captions([capmod.Cue(0.4, 1.0, "Replaced")], 0, 60, replace=True)
+    yield 300
+    check("new captions can replace a range", [(c.start, c.end) for c in app.caption_tracks()[0].clips] ==
+          [(12, 30), (60, 90)] and len(app.caption_tracks()) == 1)
+    app.do("auto_captions")
+    yield 300
+    from tideline.ui.captions_dialog import CaptionsDialog
+    dlg = next((w for w in app.get_windows() if isinstance(w, CaptionsDialog)), None)
+    check("Auto Captions opens its dialog", dlg is not None and dlg.note.get_text() != "")
+    if dlg is not None:
+        dlg.close()
+    yield 200
+    app.do("undo")
+    app.do("undo")
+    app.do("undo")
+    yield 400
+    check("undo removes the caption track", not app.caption_tracks() and len(app.seq.video_tracks) == tracks_before)
+
     # ---- nesting, project panel, persistence --------------------------------
     first = app.project.media_for_sequence(app.seq.id)
     inner_end = app.seq.end()

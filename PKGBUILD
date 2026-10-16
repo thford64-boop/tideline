@@ -1,6 +1,6 @@
 # Local package build: run `makepkg -si` in this directory.
 pkgname=tideline
-pkgver=0.0.1
+pkgver=0.0.2
 pkgrel=1
 pkgdesc="Non-linear video editor built on MLT and GTK 4"
 arch=('any')
@@ -10,7 +10,9 @@ depends=('python' 'python-gobject' 'python-cairo' 'python-numpy' 'gtk4' 'libadwa
          'mlt' 'ffmpeg' 'frei0r-plugins' 'sdl2' 'qt6-base' 'qt6-svg' 'qt6-5compat')
 optdepends=('rubberband: keep audio pitch when changing clip speed'
             'vid.stab: MLT stabilisation plugin'
-            'rnnoise: MLT noise suppression plugin')
+            'rnnoise: MLT noise suppression plugin'
+            'whisper-cpp: auto captions (speech recognition)'
+            'python-openai-whisper: auto captions with OpenAI Whisper')
 options=('!strip')
 
 pkgver() {

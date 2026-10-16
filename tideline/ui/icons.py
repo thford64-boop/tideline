@@ -513,6 +513,24 @@ def _restore(cr):
     cr.stroke()
 
 
+def _popout(cr):
+    _line(cr, (11, 5), (4, 5), (4, 19), (18, 19), (18, 13))
+    cr.stroke()
+    _line(cr, (10, 14), (20, 4))
+    _line(cr, (14, 4), (20, 4), (20, 10))
+    cr.stroke()
+
+
+def _captions(cr):
+    cr.rectangle(3, 5.5, 18, 13)
+    cr.stroke()
+    _line(cr, (6, 11), (12, 11))
+    _line(cr, (14, 11), (18, 11))
+    _line(cr, (6, 14.5), (10, 14.5))
+    _line(cr, (12, 14.5), (18, 14.5))
+    cr.stroke()
+
+
 ICONS = {
     "select": _select, "track_fwd": _track_fwd, "ripple": _ripple, "roll": _roll, "rate": _rate,
     "razor": _razor, "slip": _slip, "slide": _slide, "pen": _pen, "hand": _hand, "zoom": _zoom,
@@ -527,6 +545,7 @@ ICONS = {
     "film": _film, "wave": _wave, "image": _image, "sequence": _sequence, "title": _title,
     "swatch": _swatch, "fx": _fx, "search": _search, "lock": _lock, "unlock": _unlock,
     "eye": _eye, "eye_off": _eye_off, "curve": _curve, "fullscreen": _fullscreen, "restore": _restore,
+    "popout": _popout, "captions": _captions,
 }
 
 MEDIA_ICONS = {"video": "film", "audio": "wave", "image": "image", "sequence": "sequence",

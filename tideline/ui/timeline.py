@@ -531,8 +531,12 @@ class TimelineView(Gtk.DrawingArea):
             self._text(cr, "fx", tx, by + 1.5, 14, theme.WARN, size=9, bold=True, align=Pango.Alignment.CENTER)
             tx += 18
         name = clip.name or (media.name if media else "Missing media")
+        if track.captions and clip.effect("text") is not None:
+            name = " ".join(str(clip.effect("text").value("text", None, "")).split()) or name
         if abs(clip.speed - 1.0) > 1e-6 or clip.reverse:
             name += f"  [{'-' if clip.reverse else ''}{clip.speed * 100:.4g}%]"
+        if any(e.type == "time_remap" and e.enabled for e in clip.effects):
+            name += "  [Time Remap]"
         if x1 - tx > 14:
             self._text(cr, name, tx, by + 1, x1 - tx - 4, (1, 1, 1, 0.95 if clip.enabled else 0.45), size=10.5)
         if media is None or media.offline:

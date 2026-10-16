@@ -13,10 +13,12 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 
 from . import APP_ID, APP_NAME, PROJECT_EXT, VERSION  # noqa: E402
+from . import captions as captionsmod  # noqa: E402
 from . import fonts  # noqa: E402
 from . import keyframes as kf  # noqa: E402
 from . import presets  # noqa: E402
 from . import settings as settingsmod  # noqa: E402
+from . import timeremap  # noqa: E402
 from . import timecode as tc  # noqa: E402
 from .commands import ALIASES, BY_NAME, COMMANDS  # noqa: E402
 from .edits import AUDIO_TRANSITIONS, EditError, Editor  # noqa: E402
@@ -27,7 +29,7 @@ from .engine.effects import (DEFAULT_AUDIO_TRANSITION, DEFAULT_VIDEO_TRANSITION,
                              TRANSITIONS)
 from .engine.player import Player  # noqa: E402
 from .history import History  # noqa: E402
-from .model import (LABEL_AUDIO, LABEL_GENERATED, Effect, Marker, MediaItem, Project,  # noqa: E402
+from .model import (LABEL_AUDIO, LABEL_GENERATED, Clip, Effect, Marker, MediaItem, Project,  # noqa: E402
                     Sequence)
 
 
@@ -65,12 +67,19 @@ class App(Adw.Application):
         if os.environ.get("TIDELINE_DEBUG_SCRIPT"):
             self.prefs.save = lambda: None        # test runs leave the user's settings alone
         self.launcher = None
+        self.popout = None
         self._ph_last = 0                 # when "playhead" was last emitted during playback
         self._ph_flush = 0
 
     # -- events ----------------------------------------------------------
     def on(self, event, fn):
         self._listeners[event].append(fn)
+
+    def off(self, event, fn):
+        try:
+            self._listeners[event].remove(fn)
+        except ValueError:
+            pass
 
     def emit(self, event, *args):
         for fn in list(self._listeners[event]):
@@ -764,6 +773,9 @@ class App(Adw.Application):
         if media is None or media.unlimited:
             return self.open_source(media)
         local = clip.source_frame(seq.playhead)
+        remap = timeremap.remap_of(clip) if media.kind in timeremap.MEDIA_KINDS else None
+        if remap is not None:
+            local = int(round(remap.position(local)))
         total = self.project.media_frames(media, seq, clip.speed) or 1
         if clip.reverse:
             local = total - 1 - local
@@ -1044,6 +1056,204 @@ class App(Adw.Application):
         ids = list(self.selection)
         self.edit("Speed/Duration", lambda ed: ed.set_speed(ids, speed, reverse, ripple))
 
+    # -- captions --------------------------------------------------------
+    def caption_style(self, seq=None):
+        """Text effect parameters for a new caption: white on a dark box,
+        near the bottom, sized to the frame."""
+        seq = seq or self.seq
+        size = max(16, int(round(min(seq.width, seq.height) / 18)))
+        return {"font": "Sans", "size": size, "bold": True, "italic": False, "fill": "#ffffffff",
+                "stroke": "#000000ff", "stroke_width": 0, "background": "#000000b0",
+                "padding": max(4, size // 4), "halign": "center", "valign": "bottom",
+                "offset": [0.0, -float(round(seq.height * 0.06))]}
+
+    def caption_tracks(self, seq=None):
+        seq = seq or self.seq
+        return [t for t in seq.video_tracks if t.captions] if seq is not None else []
+
+    def add_captions(self, cues, start=0, end=None, replace=False, label="Add Captions"):
+        """Place ``cues`` (seconds from frame ``start``) as caption clips. With
+        ``replace`` they go on the existing caption track, clearing
+        ``start``..``end`` first; otherwise on a new caption track at the top.
+        Returns the number of captions placed."""
+        seq = self.seq
+        if seq is None or not cues:
+            return 0
+        fps = seq.fps
+        style = self.caption_style(seq)
+        item = next((m for m in self.project.media.values()
+                     if m.kind == "title" and m.name == "Captions" and m.parent is None), None)
+        if item is None:
+            item = self.project.add_media(MediaItem(name="Captions", kind="title", has_video=True,
+                                                    label=LABEL_GENERATED, params=dict(style, text="Caption")))
+
+        def run(ed):
+            existing = self.caption_tracks(seq)
+            if replace and existing:
+                track = existing[-1]
+                ed._free(track)
+                stop = end if end is not None else max(track.end(), start + int(round(cues[-1].end * fps)) + 1)
+                ed.clear_range(track, start, stop)
+            else:
+                track = seq.add_track("video")
+                n = len(existing) + 1
+                track.name = "Captions" if n == 1 else f"Captions {n}"
+                track.captions = True
+            placed, prev_end = 0, 0
+            for cue in cues:
+                a = max(start + int(round(cue.start * fps)), prev_end)
+                b = start + int(round(cue.end * fps))
+                if end is not None:
+                    b = min(b, end)
+                if b <= a:
+                    continue
+                track.clips = [c for c in track.clips if c.end <= a or c.start >= b]
+                track.clips.append(Clip(media_id=item.id, start=a, duration=b - a, name="", effects=[
+                    Effect("text", params=dict(style, text=cue.text)), Effect("motion"), Effect("opacity")]))
+                prev_end = b
+                placed += 1
+            if not placed:
+                raise EditError("None of the captions fall inside the sequence.")
+            track.sort()
+            return placed
+
+        placed = self.edit(label, run) or 0
+        self.emit("media")
+        if placed:
+            self.status(f"{placed} caption{'s' if placed != 1 else ''} added. Select one to edit its words "
+                        "and style in Effect Controls; File ▸ Export Captions writes SRT or WebVTT.")
+        return placed
+
+    def caption_cues(self, seq=None):
+        """The sequence's captions as cues (seconds from the sequence start)."""
+        seq = seq or self.seq
+        out = []
+        for track in self.caption_tracks(seq):
+            if track.hidden:
+                continue
+            for c in track.clips:
+                text_fx = c.effect("text")
+                text = (text_fx.value("text", None, "") if text_fx else c.name) or ""
+                if c.enabled and text.strip():
+                    out.append(captionsmod.Cue(c.start / seq.fps, c.end / seq.fps, text.strip()))
+        out.sort(key=lambda q: q.start)
+        return out
+
+    def cmd_auto_captions(self):
+        seq = self.seq
+        if seq is None or seq.end() <= 0:
+            return self.status("Add some clips with speech to the timeline first.", warn=True)
+        if not any(t.clips for t in seq.audio_tracks):
+            return self.status("This sequence has no audio clips to caption.", warn=True)
+        from .ui.captions_dialog import CaptionsDialog
+        CaptionsDialog(self).present()
+
+    def cmd_import_captions(self):
+        if self.seq is None:
+            return self.status("Open a sequence to add captions to.", warn=True)
+        from .ui.widgets import file_filter, open_files
+
+        def chosen(paths):
+            try:
+                cues = captionsmod.load(paths[0])
+            except captionsmod.CaptionError as exc:
+                return self.status(str(exc), warn=True)
+            self.add_captions(cues, 0, label="Import Captions")
+
+        open_files(self.window, "Import Captions", chosen,
+                   [file_filter("Captions (SRT, WebVTT)", ["*.srt", "*.vtt", "*.SRT", "*.VTT"]),
+                    file_filter("All files", ["*"])], multiple=False)
+
+    def cmd_export_captions(self):
+        seq = self.seq
+        cues = self.caption_cues(seq) if seq is not None else []
+        if not cues:
+            return self.status("No captions to export: use Sequence ▸ Captions ▸ Auto Captions or Import "
+                               "Captions first.", warn=True)
+        from .ui.widgets import file_filter, save_file
+        folder = os.path.dirname(self.project.path) if self.project.path else None
+
+        def chosen(path):
+            if not path.lower().endswith((".srt", ".vtt")):
+                path += ".srt"
+            try:
+                captionsmod.save(cues, path)
+            except OSError as exc:
+                return self.status(f"Could not write {path}: {exc.strerror}", warn=True)
+            self.status(f"Exported {len(cues)} captions to {path}")
+
+        save_file(self.window, "Export Captions", seq.name + ".srt", chosen,
+                  [file_filter("SubRip (.srt)", ["*.srt"]), file_filter("WebVTT (.vtt)", ["*.vtt"])],
+                  folder=folder)
+
+    # -- pop-out preview -------------------------------------------------
+    def cmd_popout_monitor(self):
+        """Open (or bring back) the pop-out preview window."""
+        from .ui.popout import PopoutMonitor
+        if self.popout is None:
+            self.popout = PopoutMonitor(self, "source" if self.focus == "source" else "program")
+        self.popout.present()
+
+    # -- time remapping --------------------------------------------------
+    def cmd_time_remap(self):
+        """Switch time remapping on for the selected clips (and the clips
+        linked to them), or off when every one of them already has it."""
+        seq = self.seq
+        if seq is None:
+            return
+        ed = Editor(self.project, seq, linked=True)
+        pairs = [(t, c) for t, c in ed.items(ed.expand(self.selection)) if not t.locked]
+        pairs = [(t, c) for t, c in pairs
+                 if getattr(self.project.media.get(c.media_id), "kind", None) in timeremap.MEDIA_KINDS]
+        if not pairs:
+            return self.status("Select a clip made from a video or audio file to remap its time.", warn=True)
+        if all(c.effect(timeremap.EFFECT) is not None for _, c in pairs):
+            for _, c in pairs:
+                c.effects = [e for e in c.effects if e.type != timeremap.EFFECT]
+            self.commit("Remove Time Remapping")
+            self.status("Time remapping removed.")
+        else:
+            for _, c in pairs:
+                if c.effect(timeremap.EFFECT) is None:
+                    c.effects = [Effect(timeremap.EFFECT, params={"speed": 100.0, "anchor": c.in_point})] + c.effects
+            self.commit("Time Remapping")
+            self.status("Time remapping is on: animate Speed in Effect Controls (stopwatch, then the curve "
+                        "button for its graph). 0 % freezes the frame, below 0 runs backwards.")
+            if self.window:
+                self.window.show_panel("effect_controls")
+        self.emit("selection")
+
+    def _clip_of_effect(self, effect):
+        for track, clip in self.seq.all_clips() if self.seq else ():
+            if any(e is effect for e in clip.effects):
+                return track, clip
+        return None, None
+
+    def _remap_partners(self, clip):
+        if self.seq is None or not clip.link_id:
+            return []
+        return Editor(self.project, self.seq).partners(clip)
+
+    def _sync_remap(self, effect):
+        """Give the clips linked to the effect's clip the same speed curve,
+        so picture and sound stay together."""
+        _, clip = self._clip_of_effect(effect)
+        if clip is None:
+            return
+        for _, other in self._remap_partners(clip):
+            if getattr(self.project.media.get(other.media_id), "kind", None) not in timeremap.MEDIA_KINDS:
+                continue
+            shift = other.in_point - clip.in_point
+            mirror = Effect(timeremap.EFFECT, enabled=effect.enabled,
+                            params=dict(effect.params, anchor=int(effect.params.get("anchor", clip.in_point)) + shift),
+                            keyframes={n: kf.scale_times(k, 1.0, shift) for n, k in effect.keyframes.items() if k})
+            current = other.effect(timeremap.EFFECT)
+            if current is not None:
+                mirror.id, mirror.collapsed = current.id, current.collapsed
+                other.effects = [mirror if e is current else e for e in other.effects]
+            else:
+                other.effects = [mirror] + other.effects
+
     def cmd_remove_effects(self):
         changed = False
         for _, c in self.selected_clips():
@@ -1153,7 +1363,7 @@ class App(Adw.Application):
         n = 0
         for cid in ids:
             track, clip = seq.find_clip(cid)
-            if clip is not None and track.kind == edef.kind and not track.locked:
+            if clip is not None and edef.fits(track.kind) and not track.locked:
                 clip.effects = clip.effects + [Effect(key)]
                 n += 1
         if n:
@@ -1165,6 +1375,9 @@ class App(Adw.Application):
 
     def remove_effect(self, clip, effect):
         clip.effects = [e for e in clip.effects if e.id != effect.id]
+        if effect.type == timeremap.EFFECT:
+            for _, other in self._remap_partners(clip):
+                other.effects = [e for e in other.effects if e.type != timeremap.EFFECT]
         self.commit(f"Remove {EFFECTS[effect.type].label}")
         self.emit("selection")
 
@@ -1180,6 +1393,8 @@ class App(Adw.Application):
 
     def effect_changed(self, effect, final=True, label="Change Effect"):
         """An effect's parameters changed: update the live graph, redraw."""
+        if effect.type == timeremap.EFFECT:
+            self._sync_remap(effect)
         if self.graph is None or not self.graph.update_effect(effect):
             self.queue_rebuild()
         else:
@@ -1277,7 +1492,8 @@ class App(Adw.Application):
         self.set_keyframes(effect, pdef, kfs, label="Remove Keyframe")
 
     def reset_effect(self, effect):
-        effect.params, effect.keyframes = {}, {}
+        keep = {"anchor": effect.params["anchor"]} if "anchor" in effect.params else {}
+        effect.params, effect.keyframes = keep, {}
         self.effect_changed(effect, True, "Reset Effect")
         self.emit("selection")
 

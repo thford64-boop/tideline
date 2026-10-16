@@ -395,7 +395,7 @@ class EffectControls(Gtk.Box):
             self.body.append(title)
             for effect in c.effects:
                 edef = EFFECTS.get(effect.type)
-                if edef is not None and edef.kind == track.kind:
+                if edef is not None and edef.fits(track.kind):
                     self._build_effect(c, effect, edef)
 
     def _build_effect(self, clip, effect, edef):

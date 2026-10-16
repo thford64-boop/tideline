@@ -20,6 +20,7 @@ class VideoView(Gtk.Widget):
         self.hint = hint
         self.safe_margins = False
         self.overlay = None          # callable(cr, x, y, w, h)
+        self.background = None       # colour around the picture; None = the theme's
         self.set_overflow(Gtk.Overflow.HIDDEN)
 
     def set_frame(self, pixels, w, h):
@@ -46,7 +47,7 @@ class VideoView(Gtk.Widget):
         W, H = self.get_width(), self.get_height()
         full = Graphene.Rect().init(0, 0, W, H)
         bg = Gdk.RGBA()
-        bg.parse(theme.BG0)
+        bg.parse(self.background or theme.BG0)
         snapshot.append_color(bg, full)
         x, y, w, h = self.frame_rect()
         if self.texture is not None:
@@ -195,7 +196,9 @@ class MonitorPanel(Gtk.Box):
             cmds += [("insert", "insert", "Insert (,)"), ("overwrite", "overwrite", "Overwrite (.)")]
         else:
             cmds += [("lift", "lift", "Lift (;)"), ("extract", "extract", "Extract (')"),
-                     ("camera", "export_frame", "Export Frame (Ctrl+Shift+E)")]
+                     ("camera", "export_frame", "Export Frame (Ctrl+Shift+E)"),
+                     ("popout", "popout_monitor", "Pop-out Preview: show the program on another display "
+                                                  "(Ctrl+Shift+F11)")]
         for icon, cmd, tip in cmds:
             btn = icon_button(icon, tip, lambda b, c=cmd: self._command(c), size=17)
             if icon == "play":

@@ -2,6 +2,6 @@
 
 APP_NAME = "Tideline"
 APP_ID = "org.tideline.Tideline"
-VERSION = "0.0.1"
+VERSION = "0.0.2"
 PROJECT_EXT = ".tideline"
 PROJECT_FORMAT = 1

@@ -48,7 +48,7 @@ class Editor:
 
     def clip_len(self, clip, speed=None):
         """Frames available in the clip's own timebase; None if unlimited."""
-        return self.project.media_frames(self.media(clip), self.seq, speed or clip.speed)
+        return self.project.clip_frames(clip, self.seq, speed)
 
     def items(self, clip_ids):
         out = []
@@ -550,9 +550,11 @@ class Editor:
         c.duration = max(1, int(duration if duration is not None else round(c.duration * ratio)))
         effects = []
         for e in c.effects:
-            if e.keyframes:
+            if e.keyframes or "anchor" in e.params:
                 e = e.copy(fresh_id=False)
                 e.keyframes = {k: kf.scale_times(v, ratio) for k, v in e.keyframes.items()}
+                if "anchor" in e.params:
+                    e.params["anchor"] = int(round(e.params["anchor"] * ratio))
             effects.append(e)
         c.effects = effects
         c.speed = speed
@@ -603,13 +605,15 @@ class Editor:
             if abs(c.speed - speed) > 1e-9:
                 self._retime(c, speed)
             if reverse is not None and reverse != c.reverse:
-                total = self.clip_len(c)
+                total = self.project.media_frames(self.media(c), self.seq, c.speed)
                 c.in_point = max(0, total - (c.in_point + c.duration))
                 effects = []
                 for e in c.effects:
-                    if e.keyframes:
+                    if e.keyframes or "anchor" in e.params:
                         e = e.copy(fresh_id=False)
                         e.keyframes = {k: kf.scale_times(v, -1, total - 1) for k, v in e.keyframes.items()}
+                        if "anchor" in e.params:
+                            e.params["anchor"] = max(0, total - 1 - int(e.params["anchor"]))
                     effects.append(e)
                 c.effects = effects
                 c.reverse = reverse

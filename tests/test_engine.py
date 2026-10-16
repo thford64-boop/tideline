@@ -11,6 +11,7 @@ import wave
 
 import numpy as np
 
+from tideline import timeremap
 from tideline.edits import Editor
 from tideline.engine import media as mediamod
 from tideline.engine.builder import Builder
@@ -391,8 +392,8 @@ class Graphs(Base):
         failed = []
         for key, edef in EFFECTS.items():
             clip = v if edef.kind == "video" else au
-            if not edef.available():
-                continue
+            if not edef.available() or not edef.services:
+                continue                # Time Remapping retimes the producer: see TimeRemap
             for p in edef.params:
                 if not p.key or p.type in ("text", "font", "file"):
                     continue
@@ -457,6 +458,68 @@ class Graphs(Base):
         self.assertTrue(set(before) & set(after))
         for k in set(before) & set(after):
             self.assertEqual(before[k], after[k])
+
+
+def ramp_red(n):
+    """Red value of frame ``n`` of ramp.mp4 (luma 2n, limited range)."""
+    return 1.164 * (2 * n - 16)
+
+
+class TimeRemap(Base):
+    def remap(self, clip, speed=100.0, keys=None, anchor=None):
+        e = Effect("time_remap", params={"speed": speed, "anchor": clip.in_point if anchor is None else anchor},
+                   keyframes={"speed": keys} if keys else {})
+        clip.effects = [e] + clip.effects
+        return e
+
+    def test_constant_speed_curve(self):
+        (c,) = self.ed.place(self.ramp, 0, src_in=0, src_out=120)
+        self.remap(c, 200.0)
+        g = self.build()
+        self.assertAlmostEqual(px(frame(g, 10))[0], ramp_red(20), delta=6)
+        self.assertAlmostEqual(px(frame(g, 30))[0], ramp_red(60), delta=6)
+        self.assertEqual(self.p.clip_frames(c, self.seq), 90)
+
+    def test_ramp_to_freeze_and_anchor(self):
+        (c,) = self.ed.place(self.ramp, 0, src_in=30, src_out=150)
+        # 100 % at the clip's first frame easing linearly to a freeze 30 frames later.
+        self.remap(c, keys=[[30, 100.0, "linear"], [60, 0.0, "linear"]])
+        g = self.build()
+        self.assertAlmostEqual(px(frame(g, 0))[0], ramp_red(30), delta=6)    # anchored: source 30 stays put
+        held = px(frame(g, 60))[0]
+        self.assertAlmostEqual(held, ramp_red(45.5), delta=6)          # 30 + 15.5 frames
+        self.assertAlmostEqual(px(frame(g, 100))[0], held, delta=3)    # frozen
+        self.assertEqual(self.p.clip_frames(c, self.seq), timeremap.MAX_FRAMES)
+
+    def test_remap_follows_clip_speed_and_trim(self):
+        (c,) = self.ed.place(self.ramp, 0, src_in=0, src_out=120)
+        self.ed.set_speed([c.id], 2.0)
+        self.remap(c, 50.0)                                            # 50 % of 200 % = real time
+        g = self.build()
+        self.assertAlmostEqual(px(frame(g, 20))[0], ramp_red(20), delta=6)
+        self.ed.trim(c.id, "start", 10)
+        g = self.build()
+        self.assertAlmostEqual(px(frame(g, 20))[0], ramp_red(20), delta=6)    # trims do not move the picture
+
+    def test_negative_speed_runs_backwards(self):
+        (c,) = self.ed.place(self.ramp, 0, src_in=50, src_out=110)
+        self.remap(c, -100.0)
+        g = self.build()
+        self.assertAlmostEqual(px(frame(g, 0))[0], ramp_red(50), delta=6)
+        self.assertAlmostEqual(px(frame(g, 30))[0], ramp_red(20), delta=6)
+        self.assertAlmostEqual(px(frame(g, 55))[0], ramp_red(8), delta=6)  # holds the first frame
+
+    def test_remapped_audio_and_export_xml(self):
+        v, a = self.ed.place(self.green, 0, src_out=90)
+        for clip in (v, a):
+            self.remap(clip, 50.0)
+        self.assertColor(px(frame(self.build(), 20)), GREEN)
+        audio = Audio.render(self, "remap.wav")
+        self.assertGreater(Audio.rms(audio, 0.5, 2.5), 0.05)
+        path = f"{TMP}/remap.mlt"
+        self.builder.write_xml(self.seq, path)
+        with open(path) as fh:
+            self.assertIn("timeremap", fh.read())
 
 
 class Transitions(Base):

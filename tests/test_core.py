@@ -8,6 +8,7 @@ import unittest
 from tideline import keyframes as kf
 from tideline import procedural as proc
 from tideline import timecode as tc
+from tideline import timeremap
 from tideline.edits import AUDIO_TRANSITIONS, VIDEO_TRANSITIONS, EditError, Editor
 from tideline import presets
 from tideline import settings as st
@@ -395,6 +396,53 @@ class Edits(unittest.TestCase):
         self.assertEqual(q.to_dict(), self.p.to_dict())
 
 
+class TimeRemapping(unittest.TestCase):
+    def setUp(self):
+        self.p, self.seq, self.a, _, self.still, _ = make_project()
+        self.ed = Editor(self.p, self.seq)
+
+    def remap(self, clip, speed=100.0, keys=None):
+        e = Effect("time_remap", params={"speed": speed, "anchor": clip.in_point},
+                   keyframes={"speed": keys} if keys else {})
+        clip.effects = [e] + clip.effects
+        return e
+
+    def test_position_is_the_running_sum_of_speed(self):
+        r = timeremap.Remap(Effect("time_remap", params={"speed": 100.0, "anchor": 40}))
+        self.assertEqual([r.position(p) for p in (0, 40, 100)], [0, 40, 100])
+        r = timeremap.Remap(Effect("time_remap", params={"anchor": 10},
+                                   keyframes={"speed": [[10, 100.0, "linear"], [20, 300.0, "linear"]]}))
+        self.assertEqual(r.position(10), 10)
+        self.assertAlmostEqual(r.position(20), 10 + sum(100 + 20 * i for i in range(10)) / 100)
+        self.assertAlmostEqual(r.position(25) - r.position(20), 15.0)        # 300 % after the last key
+        self.assertAlmostEqual(r.position(5), 5.0)                           # 100 % before the first
+
+    def test_length_follows_the_curve(self):
+        (v, _) = self.ed.place(self.a, 0, src_in=0, src_out=100)              # 300 source frames
+        self.remap(v, 200.0)
+        self.assertEqual(self.p.clip_frames(v, self.seq), 150)
+        self.remap(v, keys=[[0, 100.0, "linear"], [50, 0.0, "hold"]])
+        self.assertEqual(self.p.clip_frames(v, self.seq), timeremap.MAX_FRAMES)  # ends in a freeze
+        self.assertIsNone(self.p.clip_frames(self.ed.place(self.still, 0, v_track=self.seq.video_tracks[1])[0],
+                                             self.seq))
+
+    def test_speed_change_rescales_curve_and_anchor(self):
+        (v, _) = self.ed.place(self.a, 0, src_in=60, src_out=160)
+        e = self.remap(v, keys=[[60, 100.0, "linear"], [90, 50.0, "linear"]])
+        self.ed.set_speed([v.id], 2.0)
+        e = v.effect("time_remap")
+        self.assertEqual(e.params["anchor"], 30)
+        self.assertEqual([k[0] for k in e.keyframes["speed"]], [30, 45])
+
+    def test_time_map_is_exact_and_clamped(self):
+        r = timeremap.Remap(Effect("time_remap", params={"speed": -100.0, "anchor": 30}))
+        text = timeremap.time_map(r, 30.0, 1.0, limit=100)
+        points = dict(tuple(map(float, item.split("="))) for item in text.split(";"))
+        self.assertEqual(points[0.0], 2.0)              # 60 source frames at 30 fps
+        self.assertEqual(points[60.0], 0.0)             # crosses the file's first frame...
+        self.assertEqual(points[99.0], 0.0)             # ...and holds it
+
+
 class EverythingKeyframes(unittest.TestCase):
     def test_colours_blend_and_switches_hold(self):
         fade = [[0, "#ff0000ff", "linear"], [10, "#0000ff00", "linear"]]
@@ -410,7 +458,9 @@ class EverythingKeyframes(unittest.TestCase):
 
     def test_every_parameter_can_be_keyframed(self):
         fixed = [(d.key, p.name) for d in EFFECTS.values() for p in d.params if not p.key]
-        self.assertEqual(fixed, [("motion", "uniform")])
+        # Uniform Scale only links two rows; Frame Blending picks how the whole
+        # remapped clip is drawn.
+        self.assertEqual(fixed, [("motion", "uniform"), ("time_remap", "blend")])
 
     def test_segments_follow_stepped_keyframes(self):
         text, ctx = EFFECTS["text"], {"cut": (0, 99)}

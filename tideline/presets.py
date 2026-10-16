@@ -41,7 +41,7 @@ def capture(pairs, seq, name):
         for e in clip.effects:
             edef = EFFECTS.get(e.type)
             if edef is None or edef.kind != track.kind:
-                continue
+                continue            # Time Remapping ("any") belongs to the clip, not a look
             keyframes = {n: kf.scale_times(k, 1.0, -clip.in_point) for n, k in e.keyframes.items() if k}
             if edef.intrinsic and not e.params and not keyframes and e.enabled:
                 continue

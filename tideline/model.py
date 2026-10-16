@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, fields
 
 from . import PROJECT_FORMAT
 from . import keyframes as kf
+from . import timeremap
 
 # Clip label colours (name, hex).
 LABELS = [
@@ -212,6 +213,7 @@ class Track:
     target: bool = True
     sync_lock: bool = True
     height: int = 54
+    captions: bool = False           # video track holding caption clips (one title per caption)
     volume: float = 0.0              # dB, audio tracks
     pan: float = 0.0                 # -100..100, audio tracks
     clips: list = field(default_factory=list)
@@ -524,6 +526,17 @@ class Project:
         else:
             n = int(media.duration * seq.fps + 1e-6)
         return max(1, int(n / abs(speed or 1.0)))
+
+    def clip_frames(self, clip, seq, speed=None):
+        """Frames of a clip's own timebase that show media (``in_point +
+        duration`` may not pass it), counting its time remapping; None when
+        unlimited."""
+        media = self.media.get(clip.media_id)
+        total = self.media_frames(media, seq, speed or clip.speed)
+        if total is None or speed is not None or media.kind not in timeremap.MEDIA_KINDS:
+            return total
+        remap = timeremap.remap_of(clip)
+        return total if remap is None else max(1, remap.length(total))
 
     # -- persistence -----------------------------------------------------
     def to_dict(self):

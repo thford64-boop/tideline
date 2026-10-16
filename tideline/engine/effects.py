@@ -102,7 +102,7 @@ class EffectDef:
     key: str
     label: str
     category: str
-    kind: str                       # video | audio
+    kind: str                       # video | audio | any
     services: list                  # MLT filter services this effect creates
     params: list
     static: dict = field(default_factory=dict)
@@ -113,6 +113,10 @@ class EffectDef:
     motion: object = None           # callable(effect, ctx) -> fn(frame) -> (dx, dy, degrees, scale)
     preview: object = None          # callable(effect, ctx) -> [(label, fn(frame) -> value)]
     baked: bool = False             # computed per frame here, so no parameter needs segments
+
+    def fits(self, kind):
+        """True when the effect can sit on a track of that kind."""
+        return self.kind in (kind, "any")
 
     def param(self, name):
         for p in self.params:
@@ -589,6 +593,15 @@ _reg(
         F("balance", "Balance", 0.0, -100.0, 100.0, digits=0),
     ], intrinsic=True, stage=3, custom=_apply_pan),
 )
+
+# -- time remapping ---------------------------------------------------------
+# Not a filter: the builder reads it to retime the clip's producer (see
+# timeremap.py). It is added from Clip > Time Remapping, on both halves of a
+# linked clip, and kept the same on both.
+_reg(EffectDef("time_remap", "Time Remapping", "Fixed", "any", [], [
+    F("speed", "Speed", 100.0, -1000.0, 1000.0, unit="%"),
+    Param("blend", "Frame Blending", "bool", False, key=False),
+], hidden=True, stage=0, custom=lambda filters, effect, ctx: None))
 
 # -- text -----------------------------------------------------------------
 _reg(EffectDef("text", "Text", "Generate", "video", ["qtext"], [

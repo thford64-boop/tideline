@@ -10,7 +10,9 @@ Parameter tweaks skip the rebuild and update the live filters instead.
 """
 
 import os
+from xml.sax.saxutils import escape
 
+from .. import timeremap
 from .effects import EFFECTS, TRANSITIONS, fade_gain, gain_to_db
 from .mltlib import color_to_mlt, init, make_profile, mlt
 
@@ -243,11 +245,11 @@ class Builder:
         return pl
 
     def _handle_after(self, seq, clip):
-        total = self.project.media_frames(self.project.media.get(clip.media_id), seq, clip.speed)
+        total = self.project.clip_frames(clip, seq)
         return UNLIMITED if total is None else max(0, total - clip.in_point - clip.duration)
 
     def _handle_before(self, seq, clip):
-        total = self.project.media_frames(self.project.media.get(clip.media_id), seq, clip.speed)
+        total = self.project.clip_frames(clip, seq)
         return UNLIMITED if total is None else max(0, clip.in_point)
 
     # -- clips -----------------------------------------------------------
@@ -258,7 +260,12 @@ class Builder:
         key = (seq.id, profile.width(), profile.height(), profile.frame_rate_num(),
                profile.frame_rate_den(), media.id, media.path, round(speed, 6), track.id, lane,
                self._revision(media))
-        parent = self.cache.get(key, lambda: self._make_producer(media, profile, speed, ctx, depth, chain))
+        remap = timeremap.remap_of(clip) if media.kind in timeremap.MEDIA_KINDS else None
+        if remap is not None and not media.offline and media.path and os.path.exists(media.path):
+            key += ("remap", clip.id, remap.signature)
+            parent = self.cache.get(key, lambda: self._make_remapped(media, profile, seq, clip, remap))
+        else:
+            parent = self.cache.get(key, lambda: self._make_producer(media, profile, speed, ctx, depth, chain))
         if parent is None or not parent.is_valid():
             return None
         src_in = max(0, clip.in_point + (s - clip.start))
@@ -271,7 +278,7 @@ class Builder:
                    cut=(src_in, src_out))
         for effect in sorted(clip.effects, key=lambda x: getattr(EFFECTS.get(x.type), "stage", 1)):
             edef = EFFECTS.get(effect.type)
-            if edef is None or edef.kind != track.kind:
+            if edef is None or not edef.fits(track.kind) or not edef.services:
                 continue
             segments = edef.segments(effect, ctx)
             graph.layouts.setdefault(effect.id, []).append((edef, ctx, segments))
@@ -319,6 +326,31 @@ class Builder:
         if media.kind in ("color", "bars", "tone"):
             return repr(sorted(media.params.items()))
         return 0
+
+    def _make_remapped(self, media, profile, seq, clip, remap):
+        """A media file behind MLT's timeremap link, playing the clip's speed
+        curve. Returns (producer, refs)."""
+        total = self.project.media_frames(media, seq, clip.speed)
+        tmap = timeremap.time_map(remap, seq.fps, abs(clip.speed), total, clip.reverse)
+        out = timeremap.MAX_FRAMES - 1
+        xml = (f'<?xml version="1.0" encoding="utf-8"?><mlt><chain id="remap" out="{out}">'
+               f'<property name="resource">{escape(media.path)}</property>'
+               f'<property name="length">{out + 1}</property>'
+               '<link id="timeremap"><property name="mlt_service">timeremap</property>'
+               f'<property name="time_map">{tmap}</property>'
+               f'<property name="image_mode">{"blend" if remap.blend else "nearest"}</property>'
+               '<property name="pitch">1</property></link></chain></mlt>')
+        p = mlt.Producer(profile, "xml-string", xml)
+        if not p.is_valid():
+            return self._make_producer(media, profile, clip.speed * (-1 if clip.reverse else 1),
+                                       {}, 0, ())
+        refs = [profile]
+        if media.kind == "video" and _needs_yuv_matrix_fix(media):
+            fix = mlt.Filter(profile, "gamma")
+            fix.set("gamma", 1.0)
+            p.attach(fix)
+            refs.append(fix)
+        return p, refs
 
     def _make_producer(self, media, profile, speed, ctx, depth, chain):
         """Create the parent producer for a media item. Returns (producer, refs)."""

@@ -14,6 +14,7 @@ Everything it needs is in the Arch repositories:
 ```sh
 sudo pacman -S --needed python python-gobject python-cairo python-numpy gtk4 libadwaita \
     mlt ffmpeg frei0r-plugins sdl2 qt6-base qt6-svg qt6-5compat rubberband
+sudo pacman -S --needed whisper-cpp   # optional: auto captions
 ./run.sh                      # from this directory, no install needed
 ./run.sh project.tideline     # open a project
 ```
@@ -52,7 +53,7 @@ solo; sequences nested inside sequences. Tools:
 
 **Editing commands** — lift, extract, ripple delete (clips or gaps), add edit,
 ripple trim to playhead (`Q` / `W`), nudge, copy/paste/paste insert, duplicate,
-speed/duration with reverse and optional ripple, enable/disable, link/unlink,
+speed/duration with reverse and optional ripple, time remapping, enable/disable, link/unlink,
 match frame. Unlimited undo through a History panel.
 
 **Program monitor** — playback with J/K/L shuttle, loop and In-to-Out
@@ -106,6 +107,36 @@ library is `~/.config/tideline/presets`.
 `.ttf`/`.otf` files into `~/.local/share/tideline/fonts`, for Tideline only.
 They appear in the font chooser, render in titles and export without a restart.
 
+**Time remapping** — **Clip ▸ Time Remapping** (Ctrl+Alt+R) turns a clip's
+speed into a curve: animate **Speed** in Effect Controls like any other
+parameter, with its graph and ease presets, to ramp into slow motion and back,
+freeze a frame (0 %) or play backwards (below 0 %). The speed is relative to
+the clip's Speed/Duration setting, linked audio follows the same curve (pitch
+kept), and **Frame Blending** mixes neighbouring frames for smoother slow
+motion. The picture at the clip's first frame stays put when remapping is
+switched on, and keyframes stay with the picture when the clip is trimmed.
+
+**Captions** — **Sequence ▸ Captions ▸ Auto Captions** (Ctrl+Alt+C)
+transcribes the sequence's sound, or its In to Out range, on your computer and
+places the result on a **Captions** track: one title per caption, white on a
+dark box near the bottom, so they play, render and export like any title.
+Select one to fix its words or change the style in Effect Controls. Choose the
+model (tiny to large), language (or automatic), characters per line and lines
+per caption. **File ▸ Import Captions / Export Captions** read and write SRT
+and WebVTT. Speech recognition uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
+(`sudo pacman -S whisper-cpp`; its model is downloaded once into
+`~/.local/share/tideline/whisper`) or OpenAI Whisper (`python-openai-whisper`);
+apart from that download nothing leaves your machine.
+
+**Pop-out preview** — **Window ▸ Pop-out Preview** (Ctrl+Shift+F11, or the
+button under the Program monitor) opens the Program or Source picture in a
+window of its own. Pick a display and press **Full Screen** to fill it, for
+a client monitor, projector or TV; double-click or F toggles, Esc returns to
+a window. The pointer hides itself, J/K/L, Space and the other playback keys
+work, and timecode and safe margins can be shown over the picture. It mirrors
+the Program monitor's frames, so it costs no extra rendering; its sharpness
+follows that monitor's resolution setting.
+
 **Transitions** — cross dissolve, dips, wipes, iris, clock, push and slide for
 video; constant power, constant gain and exponential crossfades for audio.
 Between two clips or as a fade at a clip's free end.
@@ -142,7 +173,9 @@ shortcut list is under **Edit ▸ Keyboard Shortcuts** (Ctrl+Alt+K).
 
 Being upfront about the gaps compared with a commercial editor:
 
-- no multicam, captions, proxy workflow or hardware (VAAPI) encoding presets;
+- no multicam, proxy workflow or hardware (VAAPI) encoding presets;
+- captions are burned in as titles; there is no closed-caption stream in exports
+  (export an SRT or WebVTT file alongside instead);
 - no curves/scopes panel; colour tools are parameter sliders;
 - titles are single text blocks edited in Effect Controls, not on the canvas;
 - transitions and the track mixer have no keyframes;
@@ -151,7 +184,8 @@ Being upfront about the gaps compared with a commercial editor:
 - Echo, Tremolo, Limiter attack/release and Stereo Widener delay restart when
   reconfigured, so their keyframes step instead of gliding;
 - custom fonts are installed on this machine, not stored in the project file;
-- speed is constant per clip (no time remapping);
+- time remapping works on video and audio files, not on stills, titles or
+  nested sequences;
 - a nested sequence is rendered at the size and rate of the sequence that
   contains it;
 - no interchange import/export (EDL, FCP XML, OTIO) and no reading of other
@@ -168,10 +202,11 @@ while there are unsaved changes.
 ## Tests
 
 ```sh
-python -m unittest tests.test_core tests.test_engine    # 88 tests, no display needed
-TIDELINE_DEBUG_SCRIPT=tests/ui_smoke.py python -m tideline   # 104 end-to-end UI checks
+python -m unittest tests.test_core tests.test_engine tests.test_captions   # 106 tests, no display needed
+TIDELINE_DEBUG_SCRIPT=tests/ui_smoke.py python -m tideline   # 123 end-to-end UI checks
 ```
 
+`test_captions` runs the caption pipeline with a stand-in recogniser.
 `test_engine` builds real MLT graphs from generated media and checks rendered
 pixels and audio, including every transition and every export preset. The UI
 script opens the real window and drives the same handlers the mouse and
@@ -188,6 +223,8 @@ tideline/
   settings.py     preferences, playback quality presets and recent projects
   fonts.py        the private font folder and its registration with Pango, Qt and melt
   procedural.py   seeded noise and waves behind the Animate effects
+  timeremap.py    speed curves: clip frame -> source frame, MLT time maps
+  captions.py     speech-to-text jobs, caption layout, SRT / WebVTT
   engine/
     builder.py    model -> MLT graph (rebuilt after each edit, producers cached)
     player.py     real-time playback into GTK through MLT's SDL audio consumer
