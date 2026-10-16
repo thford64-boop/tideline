@@ -1,0 +1,43 @@
+{
+ "tideline_preset": 1,
+ "name": "Colour Flash",
+ "fps": 30,
+ "width": 1920,
+ "height": 1080,
+ "duration": 60,
+ "effects": [
+  {
+   "type": "tint",
+   "enabled": true,
+   "params": {
+    "black": "#ffffffff"
+   },
+   "keyframes": {
+    "amount": [
+     [
+      0,
+      100.0,
+      "expo_out"
+     ],
+     [
+      15,
+      0.0,
+      "linear"
+     ]
+    ],
+    "white": [
+     [
+      0,
+      "#ffffffff",
+      "linear"
+     ],
+     [
+      15,
+      "#ffd9a0ff",
+      "linear"
+     ]
+    ]
+   }
+  }
+ ]
+}
