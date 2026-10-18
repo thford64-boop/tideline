@@ -1,6 +1,6 @@
 # Local package build: run `makepkg -si` in this directory.
 pkgname=tideline
-pkgver=0.0.3
+pkgver=0.0.5
 pkgrel=1
 pkgdesc="Non-linear video editor built on MLT and GTK 4"
 arch=('any')

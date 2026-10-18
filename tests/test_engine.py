@@ -335,6 +335,29 @@ class Graphs(Base):
         self.assertTrue(ink[1] < ink[2] < ink[3] < ink[4], ink)  # grows on every sampled frame
         self.assertEqual(ink[4], ink[5])
 
+    def test_rgb_curves(self):
+        (c, _) = self.ed.place(self.green, 0, src_out=60)
+        curves = {"master": [[0, 0], [1, 1]], "red": [[0, 0.5], [1, 0.5]],      # red lifted to half
+                  "green": [[0, 0], [0.5, 0.25], [1, 1]], "blue": [[0, 0], [1, 1]]}
+        effect = Effect("curves", params={"curves": curves})
+        c.effects.append(effect)
+        g = self.build()
+        r, gr, b = px(frame(g, 5))
+        self.assertAlmostEqual(r, 128, delta=6)
+        from tideline import curves as cv
+        self.assertAlmostEqual(gr, round(cv.evaluate(curves["green"], 192 / 255) * 255), delta=6)
+        self.assertLess(b, 8)
+        # A changed curve reaches the live filter without a rebuild.
+        effect.params = {"curves": dict(curves, green=[[0, 0], [1, 1]], master=[[0, 1], [1, 0]])}
+        self.assertTrue(g.update_effect(effect))
+        r, gr, b = px(frame(g, 6))
+        self.assertAlmostEqual(r, 127, delta=6)          # red 128 inverted
+        self.assertAlmostEqual(gr, 63, delta=6)          # green 192 inverted
+        self.assertGreater(b, 245)
+        effect.enabled = False
+        g.update_effect(effect)
+        self.assertColor(px(frame(g, 7)), GREEN)
+
     def test_colour_keyframes(self):
         text = self.title(text="██████", size=200)
         text.keyframes = {"fill": [[0, "#ff0000ff", "linear"], [60, "#00ff00ff", "linear"]]}
@@ -395,7 +418,7 @@ class Graphs(Base):
             if not edef.available() or not edef.services:
                 continue                # Time Remapping retimes the producer: see TimeRemap
             for p in edef.params:
-                if not p.key or p.type in ("text", "font", "file"):
+                if not p.key or p.type in ("text", "font", "file", "curves"):
                     continue
                 if p.type == "bool":
                     a, b = False, True
@@ -685,6 +708,8 @@ class Export(Base):
         self.ed.place(self.green, 0, src_out=20)
         failed = []
         for fmt in FORMATS:
+            if fmt.hw:
+                continue                    # see test_hardware_formats
             path = f"{TMP}/fmt_{fmt.key}{fmt.ext}"
             done = []
             job = ExportJob(self.p, self.seq, ExportSettings(format=fmt.key, path=path, quality="low"),
@@ -696,6 +721,37 @@ class Export(Base):
             out = path if not fmt.image_sequence else f"{TMP}/fmt_{fmt.key}_00001{fmt.ext}"
             if job.error or not os.path.exists(out) or os.path.getsize(out) == 0:
                 failed.append((fmt.key, job.error[-200:]))
+        self.assertEqual(failed, [])
+
+    def test_hardware_formats(self):
+        """Every hardware format the probe finds working encodes on every device it works on."""
+        from tideline.engine import export, hwenc
+        hwenc.forget()
+        found = []
+        export.detect_hardware(found.append)
+        t0 = time.time()
+        while not found and time.time() - t0 < 120:
+            time.sleep(0.05)
+        working = [(f, d) for f in export.hardware_formats() for d in (export.hardware_devices(f) or [])]
+        if not working:
+            self.skipTest("no working hardware encoder on this machine")
+        self.ed.place(self.green, 0, src_out=20)
+        failed = []
+        for fmt, device in working:
+            path = f"{TMP}/hw_{fmt.key}_{os.path.basename(device) or 'gpu'}{fmt.ext}"
+            done = []
+            job = ExportJob(self.p, self.seq, ExportSettings(format=fmt.key, path=path, quality="medium",
+                                                             device=device), on_done=done.append)
+            job.start()
+            t0 = time.time()
+            while not done and time.time() - t0 < 90:
+                time.sleep(0.05)
+            codec = self.probe_out(path)[:1] if os.path.exists(path) else []
+            want = {"h264": "h264", "hevc": "hevc", "av1": "av1"}[fmt.encoder.split("_")[0]]
+            if job.error or not codec or not codec[0].startswith(want):
+                failed.append((fmt.key, device, codec, job.error[-200:]))
+        print(f"\n  hardware formats encoded: {[f'{f.key}@{os.path.basename(d) or f.hw}' for f, d in working]}",
+              end="")
         self.assertEqual(failed, [])
 
     def test_audio_only(self):

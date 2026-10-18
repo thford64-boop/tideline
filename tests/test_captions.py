@@ -15,7 +15,8 @@ from tideline import captions as cap
 from tideline.edits import Editor
 from tideline.engine import media as mediamod
 from tideline.engine.builder import Builder
-from tideline.model import Project, Sequence
+from tideline.engine.effects import EFFECTS, text_animation, typed_text
+from tideline.model import Effect, Project, Sequence
 
 SRT = """1
 00:00:01,000 --> 00:00:02,500
@@ -167,6 +168,58 @@ class Pipeline(unittest.TestCase):
         fractions = [f for _, f in stages]
         self.assertEqual(fractions, sorted(fractions))
         self.assertEqual(fractions[-1], 1.0)
+
+
+
+class Styles(unittest.TestCase):
+    def test_style_becomes_text_parameters_and_back(self):
+        style = dict(cap.default_style(1920, 1080), position="top", halign="left", margin=10.0, stroke_width=4)
+        params = cap.text_params(style, 1920, 1080)
+        self.assertEqual((params["valign"], params["halign"]), ("top", "left"))
+        self.assertEqual(params["offset"], [192.0, 108.0])
+        self.assertEqual(cap.text_params(dict(style, position="bottom"), 1920, 1080)["offset"][1], -108.0)
+        self.assertEqual(cap.text_params(dict(style, position="middle", halign="center"), 1920, 1080)["offset"],
+                         [0.0, 0.0])
+        text = Effect("text", params=dict(params, text="Hello"))
+        back = cap.style_of(text, None, cap.default_style(1920, 1080), 1920, 1080)
+        for key in ("position", "halign", "margin", "stroke_width", "font", "size"):
+            self.assertEqual(back[key], style[key], key)
+        self.assertFalse(back["shadow"])
+        shadow = Effect("drop_shadow", params=cap.shadow_params(style))
+        self.assertTrue(cap.style_of(text, shadow, style, 1920, 1080)["shadow"])
+        self.assertEqual(set(cap.STYLE_KEYS), set(cap.default_style(640, 360)))
+
+    def test_typing_keeps_lines_in_place(self):
+        text = "Hello there\nworld"
+        one = typed_text(text, 1, 3)
+        self.assertTrue(one.startswith("Hel") and one.count("\n") == 1)
+        self.assertNotIn("l", one[3:].replace("\n", ""))                  # the rest is blank space
+        self.assertTrue(all(ch.isspace() for ch in one[3:]))
+        self.assertEqual(typed_text(text, 2, 1).split("\n")[0].rstrip(), "Hello")
+        self.assertEqual(typed_text(text, 2, 3), text)
+        # Blank space as wide as the hidden words, so centred lines do not jump.
+        self.assertGreater(len(typed_text("ab cd", 2, 1)), len("ab "))
+
+    def test_typing_needs_a_filter_per_step(self):
+        e = Effect("text", params={"text": "one two three", "anim_in": "words", "anim_time": 1.0})
+        ctx = {"width": 640, "height": 360, "fps": 30.0, "clip": (0, 89), "range": (0, 89), "cut": (0, 89)}
+        segs = EFFECTS["text"].segments(e, ctx)
+        self.assertEqual([s[0] for s in segs], [0, 10, 20])
+        e.params["anim_in"] = "pop"
+        self.assertEqual(EFFECTS["text"].segments(e, ctx), [None])
+
+    def test_animations_settle_to_the_resting_text(self):
+        ctx = {"width": 640, "height": 360, "fps": 30.0, "clip": (100, 189)}
+        e = Effect("text", params={"text": "Hi", "anim_in": "pop", "anim_out": "slide_down", "anim_time": 0.5})
+        n_in, n_out, at = text_animation(e, ctx)
+        self.assertEqual((n_in, n_out), (15, 15))
+        self.assertLess(at(100)[2], 0.1)                                    # pops from nothing…
+        self.assertEqual(at(140), (0.0, 0.0, 1.0, 1.0))                    # …rests in the middle…
+        self.assertGreater(at(189)[1], 0.0)                                 # …and slides down to leave
+        e.params.update(anim_in="fade", anim_out="none")
+        n_in, n_out, at = text_animation(e, ctx)
+        self.assertEqual(n_out, 0)
+        self.assertEqual(at(100)[3], 0.0)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,22 @@ makepkg -si
 On other distributions, install the same dependencies from your package
 manager and run `./install.sh` (into `~/.local`; `--uninstall` removes it).
 
+**AppImage** — one file that runs without installing anything, on distributions
+whose C library is at least as new as the build machine's:
+
+```sh
+chmod +x Tideline-0.0.5-x86_64.AppImage
+./Tideline-0.0.5-x86_64.AppImage                 # or with a project file
+```
+
+It carries Python, GTK 4, libadwaita, MLT, FFmpeg, frei0r and Qt; the graphics
+driver, display server, sound server and fonts come from your system. Build
+one from this directory with `python packaging/appimage/build.py` (it bundles
+the libraries installed on the build machine, checks that the result starts,
+and packs it with `appimagetool`, downloading that once if it is not
+installed). Build on the oldest distribution you want to support, for example
+in a container, to reach the most systems. `--appdir` stops before packing.
+
 ## What it does
 
 **Project panel** — import files or folders (dialog or drag and drop), list and
@@ -68,16 +84,65 @@ positions and their keyframes move in proportion. Sequence Settings has the
 same aspect ratio and resolution pickers for one sequence.
 
 **Effects** — every clip has Motion (position, scale, rotation), Opacity with
-blend modes, Volume and Balance. 67 more effects (51 video, 16 audio: colour
-correction, LUTs, blurs, keying, crop, distortion, stylise, EQ, dynamics,
-pitch…) come from the Effects panel, each editable in Effect Controls.
+blend modes, Volume and Balance. 71 more effects (55 video, 16 audio: colour
+correction, curves, colour wheels, LUTs, blurs, keying, crop, distortion, stylise, EQ,
+dynamics, pitch…) come from the Effects panel, each editable in Effect Controls.
+
+**RGB Curves** — **Effects ▸ Color ▸ RGB Curves** draws master, red, green and
+blue curves in an editor inside Effect Controls, over the histogram of the
+Program picture. Click to add a point, drag to move it (the other channels
+show faintly behind), double-click or right-click to remove it, or select a
+point and nudge it with the arrow keys (Shift for bigger steps). The curve is
+a monotone cubic through the points, the same one FFmpeg's `curves` filter
+draws, so what the editor shows is what renders; each drag is one undo step.
+
+**Colour wheels** — **Effects ▸ Color ▸ Colour Wheels** puts Lift, Gamma, Gain
+and Offset wheels in Effect Controls, each with a master for its brightness,
+followed by Contrast (about a Pivot) and Saturation. Drag on a wheel to push
+the picture towards a colour (Shift for fine control), double-click to centre
+it. The wheels face the same way as the vectorscope, so pushing a wheel towards
+red moves the picture towards red on the scope, and a push never changes
+brightness: that is the master's job.
+
+**Hue / Saturation curves** — **Effects ▸ Color ▸ Hue / Saturation Curves**
+has five curves over a strip of what they act on, with the picture's own spread
+of hues (or brightness, or saturation) drawn faintly behind: **Hue vs Hue**
+(turn one colour into another), **Hue vs Sat**, **Hue vs Luma**, **Luma vs Sat**
+and **Sat vs Sat**. The flat line in the middle changes nothing; click it to add
+a point (on a flat hue curve two neighbours come with it, so only that colour
+moves) and drag it up or down. The hue curves wrap around from red back to red.
+Hue and saturation change the colour, never the brightness, and greys are left
+alone.
+
+**Secondary correction** — **Effects ▸ Color ▸ Secondary Correction** changes
+only the colours its qualifier picks: a hue range, a saturation range and a
+brightness range, each with soft edges and each switchable, or the inverse of
+the selection. **Pick Colour** and a click in the Program monitor centres the
+qualifier on the colour under the pointer (sampled with the correction
+itself switched off). Bars above the settings show what is selected; **Show
+Mask** turns the picture into the selection's matte and **Highlight** greys out
+everything else. Inside the selection: Hue Shift, Saturation, Lightness and a
+Tint wheel. Colour wheels, hue curves and the secondary are each worked out as
+a 3D LUT (cached in `~/.cache/tideline/luts`) that FFmpeg applies, so the preview
+and the export match exactly.
+
+**Scopes** — the **Scopes** panel (Shift+8, beside Project and Effects) measures
+the Program monitor, or the Source monitor, as it plays: a **waveform** (luma,
+RGB overlay, or luma with Cb and Cr), an **RGB parade**, a **vectorscope** with
+75 % colour bar targets and the skin tone line, and a **histogram** of red,
+green, blue and luma with the share of crushed and clipped pixels; or all four
+at once. Luma and colour difference use the Rec. 709 coefficients. The
+**Colour** workspace (Alt+Shift+4) puts Effect Controls beside the Program
+monitor and the Scopes under it, for grading.
 
 **Keyframes on everything** — every parameter of every effect has a stopwatch:
 numbers and positions, colours, switches, choices (blend mode, alignment,
 wave…), and a title's text, font, size and style. Numbers, positions and
 colours blend along a curve; switches, choices and text step at their
-keyframes. The one exception is Motion's Uniform Scale, which only links the
-two scale rows.
+keyframes. The exceptions are Motion's Uniform Scale, which only links the two
+scale rows; a title's animations, which are movement in themselves; and RGB
+Curves, Colour Wheels, Hue / Saturation Curves and Secondary Correction, which
+are edited as a whole.
 
 **Animate** — seven effects that move the picture without keyframes: Shake
 (seeded camera shake with position, rotation and zoom, optionally scaled to
@@ -117,16 +182,55 @@ motion. The picture at the clip's first frame stays put when remapping is
 switched on, and keyframes stay with the picture when the clip is trimmed.
 
 **Captions** — **Sequence ▸ Captions ▸ Auto Captions** (Ctrl+Alt+C)
-transcribes the sequence's sound, or its In to Out range, on your computer and
-places the result on a **Captions** track: one title per caption, white on a
-dark box near the bottom, so they play, render and export like any title.
-Select one to fix its words or change the style in Effect Controls. Choose the
-model (tiny to large), language (or automatic), characters per line and lines
-per caption. **File ▸ Import Captions / Export Captions** read and write SRT
+transcribes, on your computer, **all** of the sequence, its In to Out range, or
+only the **selected clip(s)**: then it listens to just those clips and the sound
+linked to them, and places captions over them alone, so one clip can have
+captions and the rest none. The result lands on a **Captions** track (one that
+is free there, or a new one): one title per caption, so they play, render and
+export like any title. Select one to fix its words in Effect Controls. Choose
+the model (tiny to large), language (or automatic), characters per line and
+lines per caption.
+
+**Caption style** — **Sequence ▸ Captions ▸ Caption Style** (or right-click a
+caption) sets the font, size, bold, italic and underline, text colour, outline
+colour and width, the box behind the text and its padding, a drop shadow, the
+position (bottom, middle or top, left, centre or right, and the distance from
+the edge) and the **animation**: in and out each None, Fade, Pop, Zoom, Slide
+Up/Down/Left/Right or Drop, plus Typewriter and Word by Word to type a caption
+in, with how long it takes. Presets (Classic, Outline, Yellow, Bold Pop,
+Minimal, Typewriter) set several at once and a preview shows the result. Apply
+it to the **selected captions** or **all captions** in the sequence; all of
+them also become the style new captions get. The animations work on any
+title: they are the Animate In / Animate Out rows of its Text effect. Typed
+text keeps its place as it appears, so centred lines do not shift. **File ▸ Import Captions / Export Captions** read and write SRT
 and WebVTT. Speech recognition uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
 (`sudo pacman -S whisper-cpp`; its model is downloaded once into
 `~/.local/share/tideline/whisper`) or OpenAI Whisper (`python-openai-whisper`);
 apart from that download nothing leaves your machine.
+
+**Multi-camera** — select the clips of several cameras in the Project panel and
+choose **Clip ▸ Multi-Camera ▸ Create Multi-Camera Sequence** (also in the
+Project panel's right-click menu). Tideline lines them up by their **sound**
+(it listens for the claps, words and hits every camera heard; a recorder
+without a picture syncs too), by their **In points** or by their **first
+frames**, makes a multi-camera sequence with one track per camera, and opens a
+sequence holding it, ready to cut. The **Multi-Camera** panel (Shift+9) shows
+every camera at the playhead. Play, and press **1–9** (or the keypad, or click
+a camera) to cut to it: the switches are made when playback stops, as one undo
+step. When stopped, a number cuts at the playhead, or changes the camera of the
+whole clip if it is selected; right-click ▸ Camera changes the selected clips.
+Cuts are ordinary edits: trim, roll and ripple them like any other. The sound
+comes from one camera's recording (the external recorder by default), follows
+the camera, or mixes them all — the panel's Sound menu.
+
+**Dockable panels** — every panel can go anywhere. Drag a panel's tab onto
+another group's tabs to join it, onto a group's edge to split it (a highlight
+shows where it will land), or out of the window to float it in a window of its
+own — on a second display, say; closing that window docks its panels back.
+Right-click a tab to float or close it; a closed panel comes back from the
+**Window** menu. Each workspace (Editing, Effects, Colour, Audio) keeps its own
+arrangement and split sizes between sessions, and **Window ▸ Reset Workspace
+Layout** puts it back as it started.
 
 **Pop-out preview** — **Window ▸ Pop-out Preview** (Ctrl+Shift+F11, or the
 button under the Program monitor) opens the Program or Source picture in a
@@ -171,8 +275,16 @@ Between two clips or as a fade at a clip's free end.
 WAV, FLAC, MP3, Opus; whole sequence or In to Out; optional rescale. Rendering
 runs in a separate `melt` process, so the editor stays usable.
 
+**Hardware encoding** — H.264, H.265 and AV1 on the graphics card, with VA-API
+(AMD and Intel), NVENC (NVIDIA) or Quick Sync (Intel). When the Export dialog
+opens, Tideline tries each encoder on each GPU with a few test frames and lists
+only the ones that work, with the card's name; a computer with two GPUs gets
+a choice of which to use. High, Medium and Low map to a constant quantiser
+(VA-API, Quick Sync) or constant quality (NVENC), so files are a little larger
+than a CPU encode at the same setting but render several times faster.
+
 **Start-up** — the first launch walks through a short setup: pick a layout
-(Editing, Effects or Audio, each shown as a miniature), a playback quality and
+(Editing, Effects, Colour or Audio, each shown as a miniature), a playback quality and
 your first project (name, folder and format; it is saved in its own folder).
 Later launches open the project manager: recent projects (filterable), **New
 Project**, **Open Project** and an unsaved empty project. It is also under
@@ -189,20 +301,37 @@ updates during playback. Each monitor's own resolution menu still overrides the
 default. Exports always render at full quality. Preferences and the recent list
 live in `~/.config/tideline/settings.json`.
 
+**Keyboard shortcuts** — **Edit ▸ Keyboard Shortcuts** (Ctrl+Alt+K) shows a
+keyboard with every key tinted by what it does (choose Ctrl, Alt and Shift to
+see those layers; hover a key for all its uses, click it to list them) and a
+searchable list of every command, including those extensions add. Click a
+shortcut and press the new keys: if another command has them, Tideline says
+which and asks before moving them. Shortcuts can be removed, reset one at a
+time or all together, and exported to or imported from a `.tlkeys` file to take
+them to another computer. Menus and tooltips show the shortcuts in force at
+once. Changes are kept in `settings.json`; Escape is reserved.
+
 The editor opens full screen; **F11** (or the button in the header) switches
-back to a window, and `TIDELINE_WINDOWED=1` starts it windowed. The full
-shortcut list is under **Edit ▸ Keyboard Shortcuts** (Ctrl+Alt+K).
+back to a window, and `TIDELINE_WINDOWED=1` starts it windowed.
 
 ## Not there yet
 
 Being upfront about the gaps compared with a commercial editor:
 
-- no multicam or hardware (VAAPI) encoding presets;
+- hardware encoding was tested with VA-API on AMD cards; the NVENC and Quick
+  Sync presets use FFmpeg's standard options but have not been run on that
+  hardware;
 - proxies are made for video files only, not for stills or nested sequences;
 - extensions load at start-up, so installing or changing one needs a restart;
 - captions are burned in as titles; there is no closed-caption stream in exports
   (export an SRT or WebVTT file alongside instead);
-- no curves/scopes panel; colour tools are parameter sliders;
+- RGB Curves, Colour Wheels, Hue / Saturation Curves and Secondary Correction
+  are not keyframable, and the secondary has no shape masks or tracking;
+- multi-camera clips play at normal speed (no speed change on the clip), and
+  the camera grid is drawn small, so with many HD cameras it updates a few
+  times a second rather than at the full frame rate;
+- scopes measure the monitor's picture, so at a reduced playback resolution
+  they see the reduced picture;
 - titles are single text blocks edited in Effect Controls, not on the canvas;
 - transitions and the track mixer have no keyframes;
 - a keyframed title size, stroke or padding is rendered with one text filter
@@ -216,7 +345,10 @@ Being upfront about the gaps compared with a commercial editor:
   contains it;
 - no interchange import/export (EDL, FCP XML, OTIO) and no reading of other
   editors' project files;
-- panels switch between three fixed workspaces; they cannot be re-docked freely.
+- a floating panel window opens where the window manager puts it; its place
+  on screen is not remembered, only its size;
+- the AppImage is built from the build machine's libraries, so it needs a C
+  library at least that new; it is not signed and does not update itself.
 
 ## Writing extensions
 
@@ -294,12 +426,21 @@ and relative path) and are not part of the undo history.
 ## Tests
 
 ```sh
-python -m unittest tests.test_core tests.test_engine tests.test_captions \
-    tests.test_extensions tests.test_proxies          # 140 tests, no display needed
-TIDELINE_DEBUG_SCRIPT=tests/ui_smoke.py python -m tideline   # 141 end-to-end UI checks
+python -m unittest tests.test_core tests.test_engine tests.test_captions tests.test_extensions \
+    tests.test_proxies tests.test_color tests.test_keymap tests.test_dock tests.test_multicam   # 195 tests, no display needed
+TIDELINE_DEBUG_SCRIPT=tests/ui_smoke.py python -m tideline   # 207 end-to-end UI checks
 ```
 
-`test_captions` runs the caption pipeline with a stand-in recogniser.
+`test_color` checks the curves against FFmpeg's own `curves` filter, the
+scopes against frames of known colours, and the colour wheels, hue curves and
+secondary maths and their LUT files (through FFmpeg's `lut3d`).
+`test_multicam` syncs generated "cameras" by their sound and renders the
+camera each clip shows; `test_dock` covers docking, floating and loading saved
+layouts. `test_keymap` covers reassigning,
+conflicts and `.tlkeys` files; `test_engine` also renders RGB Curves and
+encodes with every hardware format that works on the machine running it.
+`test_captions` runs the caption pipeline with a stand-in recogniser and
+checks caption styles and title animations.
 `test_extensions` loads manifests, Python extensions and every example in
 docs/EXTENSIONS.md, and renders extension effects and wipes. `test_proxies`
 makes real proxies with FFmpeg and checks that the preview plays them while
@@ -321,8 +462,15 @@ tideline/
   fonts.py        the private font folder and its registration with Pango, Qt and melt
   procedural.py   seeded noise and waves behind the Animate effects
   timeremap.py    speed curves: clip frame -> source frame, MLT time maps
-  captions.py     speech-to-text jobs, caption layout, SRT / WebVTT
+  captions.py     speech-to-text jobs, caption layout and style, SRT / WebVTT
   proxies.py      proxy files: FFmpeg jobs, the job queue, lookup and staleness
+  curves.py       RGB Curves: control points, the PCHIP curve, FFmpeg's curve syntax
+  grading.py      colour wheels, hue/saturation curves, secondary: maths and 3D LUTs
+  multicam.py     multi-camera sequences: syncing cameras by sound, In points or start
+  dock.py         panel layouts as data: docking, splitting, floating
+  scopes.py       waveform, parade, vectorscope and histogram maths (numpy)
+  keymap.py       keyboard shortcuts: defaults, the user's changes, .tlkeys files
+  appimage.py     hands programs started from the AppImage the system's environment
   extensions.py   extension discovery, manifests, the `tl` API, installing
   engine/
     builder.py    model -> MLT graph (rebuilt after each edit, producers cached)
@@ -330,9 +478,12 @@ tideline/
     effects.py    effect and transition registry
     media.py      probing, thumbnails, waveform peaks (FFmpeg, cached)
     export.py     export presets and the melt render job
+    hwenc.py      which hardware encoders work, on which GPU
   ui/             GTK 4 panels; the timeline is one custom-drawn canvas
   app.py          controller: commands, selection, undo, players
   commands.py     command table that menus and shortcuts are generated from
+packaging/
+  appimage/       build.py and AppRun for the AppImage
 ```
 
 The data model is the single source of truth: an edit changes the model, the

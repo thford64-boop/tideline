@@ -46,6 +46,16 @@ def make_media():
     shutil.copy(f"{TMP}/c.mp4", f"{TMP}/c_moved.mp4")
     subprocess.run(ff + ["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=4", *tone(330, 4),
                          *x264, *aac, f"{TMP}/hd.mp4"], check=True, stdin=subprocess.DEVNULL)
+    # Two "cameras" hearing the same claps; camera B started 1.5 s later.
+    claps = "if(lt(mod(t*1000\\,1370)\\,30)+lt(abs(t-2.2)\\,0.02)+lt(abs(t-5.1)\\,0.03)\\,sin(2*PI*1000*t)\\,0)"
+    subprocess.run(ff + ["-f", "lavfi", "-i", f"aevalsrc={claps}:s=48000:d=10", f"{TMP}/claps.wav"], check=True,
+                   stdin=subprocess.DEVNULL)
+    subprocess.run(ff + ["-f", "lavfi", "-i", "color=c=0xc02020:size=320x180:rate=30:duration=8", "-i", f"{TMP}/claps.wav",
+                         "-map", "0:v", "-map", "1:a", "-t", "8", *x264, *aac, f"{TMP}/camA.mp4"], check=True,
+                   stdin=subprocess.DEVNULL)
+    subprocess.run(ff + ["-f", "lavfi", "-i", "color=c=0x2020c0:size=320x180:rate=30:duration=7", "-ss", "1.5",
+                         "-i", f"{TMP}/claps.wav", "-map", "0:v", "-map", "1:a", "-t", "7", *x264, *aac,
+                         f"{TMP}/camB.mp4"], check=True, stdin=subprocess.DEVNULL)
 
 
 class Mods:
@@ -425,8 +435,9 @@ def run(app):
     title = lambda: app.seq.find_clip(title_id)[1]
     text = lambda: title().effect("text")
     t0 = title().start
-    check("every parameter row has an animation toggle",
-          [r.pdef.name for r in ec.rows if not hasattr(r.watch, "set_active")] == ["uniform"])
+    check("every parameter row has an animation toggle, except the title's animations",
+          [r.pdef.name for r in ec.rows if not hasattr(r.watch, "set_active")]
+          == ["anim_in", "anim_out", "anim_time", "uniform"])
     app.set_playhead(t0)
     row("text", "fill").watch.set_active(True)
     yield 300
@@ -792,6 +803,395 @@ def run(app):
           and app.lookup_action("ext-smoke-test-ping") is None)
     app.emit("presets")
     yield 200
+
+    # ---- colour: curves and scopes -----------------------------------------
+    from tideline import curves as cv
+    from tideline.engine import export as exportmod
+    from tideline.ui.dialogs import ExportDialog
+    from tideline.ui.shortcuts import ShortcutMapper
+    vclip = next(c for t in app.seq.video_tracks for c in t.clips if c.media_id in app.project.media)
+    app.select([vclip.id])
+    app.apply_effect("curves", [vclip.id])
+    yield 400
+    app.window.show_panel("effect_controls")
+    yield 200
+    row = next((r for r in win.effect_controls.rows if r.pdef.type == "curves"), None)
+    ed = row.editor if row is not None else None
+    check("RGB Curves opens a curve editor in Effect Controls", ed is not None and ed.points == cv.IDENTITY)
+    curves_effect = lambda: next(e for t in app.seq.video_tracks for c in t.clips if c.id == vclip.id
+                                 for e in c.effects if e.type == "curves")
+    if ed is not None:
+        n_hist = len(app.history.states)
+        bx, by, size = ed._box()
+        g = Mods()
+        ed._begin(g, bx + size * 0.5, by + size * 0.5)
+        ed._update(g, 0, -size * 0.25)
+        ed._end(g, 0, -size * 0.25)
+        yield 300
+        master = curves_effect().params.get("curves", {}).get("master", [])
+        check("dragging on a curve adds and moves a point", len(master) == 3 and abs(master[1][0] - 0.5) < 0.02
+              and 0.7 < master[1][1] < 0.8, master)
+        check("a curve drag is one undo step", len(app.history.states) == n_hist + 1, len(app.history.states) - n_hist)
+        ed.buttons["red"].set_active(True)
+        ed._click(Mods(button=3), 1, *ed._to_screen(*master[1]))     # nothing there on the red curve
+        yield 200
+        check("channels are edited separately", ed.channel == "red"
+              and len(curves_effect().params["curves"]["master"]) == 3)
+        ed.buttons["master"].set_active(True)
+        ed._click(Mods(button=3), 1, *ed._to_screen(*master[1]))
+        yield 300
+        check("right-click removes a point", cv.is_identity(curves_effect().params["curves"]["master"]))
+        app.do("undo")
+        yield 300
+        check("undo brings the point back", len(curves_effect().params["curves"]["master"]) == 3)
+    app.do("workspace_color")
+    yield 600
+    sp = win.scopes_panel
+    check("the Colour workspace shows Effect Controls and the Scopes",
+          win.current_tab("scopes") == "scopes" and win.current_tab("effect_controls") == "effect_controls")
+    app.set_playhead(20)
+    yield 500
+    seen = {}
+    for i, (mode, _text) in enumerate(__import__("tideline.scopes", fromlist=["MODES"]).MODES):
+        sp.mode.set_selected(i)
+        yield 250
+        seen[mode] = set(sp.images)
+    check("each scope measures the program picture", seen.get("waveform") == {"waveform"}
+          and seen.get("vectorscope") == {"vectorscope"} and seen.get("histogram") == {"histogram"}
+          and seen.get("parade") == {"parade"}, seen)
+    check("All Scopes shows four", seen.get("all") == {"waveform", "parade", "vectorscope", "histogram"}, seen)
+    sp.mode.set_selected(0)
+    app.do("workspace_editing")
+    yield 300
+
+    # ---- keyboard shortcut mapper ------------------------------------------
+    app.do("shortcuts")
+    yield 500
+    mapper = next((w for w in app.get_windows() if isinstance(w, ShortcutMapper)), None)
+    check("Keyboard Shortcuts opens the mapper", mapper is not None)
+    if mapper is not None:
+        check("F7 is free to begin with", app.key_command(Gdk.KEY_F7, 0) is None)
+        mapper.capture("add_marker")
+        mapper._key(None, Gdk.KEY_F7, 0, Gdk.ModifierType(0))
+        yield 200
+        check("a captured key becomes the shortcut", app.key_command(Gdk.KEY_F7, 0) == "add_marker"
+              and app.key_command(Gdk.KEY_m, 0) is None)
+        markers = len(app.seq.markers)
+        key(Gdk.KEY_F7)
+        check("the new key runs the command in the editor", len(app.seq.markers) == markers + 1)
+        mapper.capture("tool_razor")
+        mapper._key(None, Gdk.KEY_v, 0, Gdk.ModifierType(0))       # V belongs to the Selection tool
+        yield 200
+        check("a taken key asks before reassigning", mapper.banner.get_visible()
+              and app.key_command(Gdk.KEY_v, 0) == "tool_select")
+        mapper._confirm(True)
+        yield 200
+        check("reassigning moves the key", app.key_command(Gdk.KEY_v, 0) == "tool_razor"
+              and app.keymap.accel("tool_select") == "")
+        check("tooltips follow the shortcuts", win.tools.buttons["razor"].get_tooltip_text().endswith("(V)")
+              and win.tools.buttons["select"].get_tooltip_text() == "Selection Tool")
+        model = win.menubar.get_menu_model()
+
+        def menu_accel(menu, action):
+            for i in range(menu.get_n_items()):
+                if menu.get_item_attribute_value(i, "action", None) and \
+                        menu.get_item_attribute_value(i, "action", None).get_string() == action:
+                    v = menu.get_item_attribute_value(i, "accel", None)
+                    return v.get_string() if v else ""
+                for link in ("section", "submenu"):
+                    sub = menu.get_item_link(i, link)
+                    if sub is not None:
+                        found = menu_accel(sub, action)
+                        if found is not None:
+                            return found
+            return None
+
+        check("menus show the new shortcut", menu_accel(model, "app.add_marker") == "F7",
+              menu_accel(model, "app.add_marker"))
+        mapper.filter_key("v", "V")
+        shown = [n for n, (r, *_rest) in mapper.rows.items() if r.get_visible()]
+        check("clicking a key lists what it does with any modifier",
+              sorted(shown) == ["paste", "paste_insert", "tool_razor"], shown)
+        mapper.filter_key(None, None)
+        keys_file = f"{TMP}/mine.tlkeys"
+        app.keymap.dump(keys_file)
+        mapper._reset_all()
+        mapper._confirm(True)
+        yield 200
+        check("Reset All restores the defaults", app.keymap.overrides == {}
+              and app.key_command(Gdk.KEY_m, 0) == "add_marker" and app.key_command(Gdk.KEY_v, 0) == "tool_select")
+        app.keymap.load(keys_file)
+        app.set_shortcuts()
+        check("a saved shortcut file loads back", app.key_command(Gdk.KEY_F7, 0) == "add_marker")
+        app.keymap.reset_all()
+        app.set_shortcuts()
+        mapper.close()
+        yield 200
+
+    # ---- export: hardware encoders -------------------------------------------
+    app.do("export")
+    yield 300
+    dlg = next((w for w in app.get_windows() if isinstance(w, ExportDialog)), None)
+    for _ in range(100):
+        if dlg is None or not dlg.hw_note.get_text().startswith("Looking"):
+            break
+        yield 100
+    yield 300
+    if dlg is not None:
+        listed = [f for f in dlg.formats if f.hw]
+        check("Export lists only hardware formats that work here",
+              all(exportmod.hardware_devices(f) for f in listed) and not dlg.hw_note.get_text().startswith("Looking"),
+              [f.key for f in listed])
+        if listed:
+            dlg.format.set_selected(dlg.formats.index(listed[0]))
+            yield 100
+            check("a hardware format names its GPU", "encoded on" in dlg.summary.get_text(), dlg.summary.get_text())
+        dlg.close()
+        yield 200
+
+    # ---- grading: colour wheels, hue curves, secondary ------------------------
+    from tideline import captions as capmod
+    from tideline import dock as dockmod
+    from tideline import grading
+    from tideline.ui.caption_style import PRESETS, CaptionStyleDialog
+    from tideline.ui.grading_widgets import ColourWheel, HueCurveEditor, QualifierView
+    from tideline.ui.multicam import MulticamDialog
+    from tideline.ui.widgets import PanelDrag
+    grading.CACHE_DIR = f"{TMP}/luts"
+    orig_seq = app.seq.id
+    vclip = next(c for t in app.seq.video_tracks for c in t.clips if c.media_id in app.project.media
+                 and app.project.media[c.media_id].kind == "video")
+    vid = vclip.id
+    live = lambda: app.seq.find_clip(vid)[1]
+    fx = lambda kind: next((e for e in live().effects if e.type == kind), None)
+    app.set_playhead(live().start + 5)
+    app.select([vid], expand=False)
+    for kind in ("wheels", "hue_curves", "secondary"):
+        app.apply_effect(kind, [vid])
+    win.show_panel("effect_controls")
+    yield 600
+    wheels = [r.editor for r in win.effect_controls.rows if isinstance(r.editor, ColourWheel)]
+    check("Colour Wheels shows lift, gamma, gain and offset wheels (and the secondary's tint)",
+          len(wheels) == 5, len(wheels))
+    if wheels:
+        n_hist = len(app.history.states)
+        g = Mods()
+        wheels[2]._begin(g, 50, 50)
+        wheels[2]._update(g, 30, -10)
+        wheels[2]._end(g, 30, -10)
+        yield 400
+        gain = fx("wheels").params.get("gain")
+        check("dragging a wheel pushes its colour", gain is not None and gain[0] > 0.1 and gain[1] > 0.0, gain)
+        check("a wheel drag is one undo step", len(app.history.states) == n_hist + 1)
+        entry = app.graph.filters.get(fx("wheels").id) if app.graph else None
+        lut = entry[0][1][0].get("av.file") if entry else ""
+        check("the grade reaches the graph as a LUT", bool(lut) and lut.endswith(".cube") and os.path.exists(lut), lut)
+    hue = next((r.editor for r in win.effect_controls.rows if isinstance(r.editor, HueCurveEditor)), None)
+    check("Hue / Saturation Curves opens its curve editor", hue is not None)
+    if hue is not None:
+        hue.buttons["hue_sat"].set_active(True)
+        bx, by, bw, bh = hue._box()
+        g = Mods()
+        hue._begin(g, bx + bw * 0.33, by + bh * 0.5)
+        hue._update(g, 0, -bh * 0.3)
+        hue._end(g, 0, -bh * 0.3)
+        yield 400
+        pts = fx("hue_curves").params.get("curves", {}).get("hue_sat", [])
+        check("clicking a flat hue curve adds a point with two anchors", len(pts) == 3 and max(p[1] for p in pts) > 0.7,
+              pts)
+    sec = fx("secondary")
+    view = next((p for p in win.effect_controls.previews if isinstance(p, QualifierView)), None)
+    check("Secondary Correction shows its qualifier", view is not None)
+    app.pick_qualifier(live(), sec)
+    check("Pick Colour waits for a click in the Program monitor", app.picker is not None)
+    win.program_monitor._xf_begin(None, *[c / 2 for c in (win.program_monitor.view.get_width(),
+                                                         win.program_monitor.view.get_height())])
+    yield 600
+    sec = fx("secondary")
+    check("a click picks the qualifier's colour", app.picker is None and sec.params.get("hue") is not None
+          and sec.params.get("luma_high", 100) <= 100, sec.params)
+    app.set_param(live(), sec, app_effects()["secondary"].param("view"), "mask")
+    yield 900
+    frame = app.frames.get("program")
+    if frame and frame[0]:
+        img = __import__("numpy").frombuffer(frame[0], dtype="uint8").reshape(frame[2], frame[1], 3).astype(int)
+        check("Show Mask turns the picture into the selection's matte",
+              abs(img[..., 0] - img[..., 1]).max() <= 2 and abs(img[..., 1] - img[..., 2]).max() <= 2)
+    for kind in ("secondary", "hue_curves", "wheels"):
+        app.remove_effect(live(), fx(kind))
+    yield 300
+
+    # ---- captions: style, animation and per-clip captions ---------------------
+    cues = [capmod.Cue(0.2, 1.4, "Hello there everyone"), capmod.Cue(1.6, 3.0, "Second caption")]
+    app.add_captions(cues, 0)
+    yield 500
+    ctrack = app.caption_tracks()[-1]
+    check("captions land on a caption track", len(ctrack.clips) == 2)
+    app.do("caption_style")
+    yield 400
+    dlg = next((w for w in app.get_windows() if isinstance(w, CaptionStyleDialog)), None)
+    check("Caption Style opens", dlg is not None)
+    if dlg is not None:
+        dlg._preset(dict(PRESETS)["Bold Pop"])
+        dlg.shadow.set_active(True)
+        dlg.scope_all.set_active(True)
+        n_hist = len(app.history.states)
+        dlg.accept()
+        yield 400
+        texts = [c.effect("text") for c in app.caption_tracks()[-1].clips]
+        check("a style applies to every caption", all(t.params.get("anim_in") == "pop"
+                                                     and t.params.get("stroke_width") == 5 for t in texts))
+        check("…with a drop shadow, in one undo step", all(c.effect("drop_shadow") for c in app.caption_tracks()[-1].clips)
+              and len(app.history.states) == n_hist + 1)
+        check("…and becomes the style for new captions", app.seq.caption_style.get("anim_in") == "pop")
+    first_cap = app.caption_tracks()[-1].clips[0].id
+    app.select([first_cap], expand=False)
+    app.do("caption_style")
+    yield 400
+    dlg = next((w for w in app.get_windows() if isinstance(w, CaptionStyleDialog)), None)
+    if dlg is not None:
+        check("with captions selected the style applies to them", dlg.scope_selected.get_active())
+        dlg.fill.set_rgba(__import__("tideline.ui.widgets", fromlist=["parse_rgba"]).parse_rgba("#ffd43bff"))
+        dlg.anim_in.set_selected([k for k, _ in dlg.anim_in.items].index("typewriter"))
+        dlg.accept()
+        yield 600
+        caps = app.caption_tracks()[-1].clips
+        check("only the selected caption changes", caps[0].effect("text").params["fill"] == "#ffd43bff"
+              and caps[1].effect("text").params["fill"] != "#ffd43bff")
+        tid = caps[0].effect("text").id
+        check("a typewriter caption types itself in, a filter per word", app.graph is not None
+              and len(app.graph.filters.get(tid, [])) >= 3, len(app.graph.filters.get(tid, [])))
+    source, a0, b0 = app.caption_source([vid])
+    kept = [c for _, c in source.all_clips()]
+    check("per-clip captions hear only that clip and its sound",
+          {c.id for c in kept} == {vid} | {c.id for _, c in app.editor().partners(live())}
+          and (a0, b0) == (live().start, live().end), (len(kept), a0, b0))
+    from tideline.ui.captions_dialog import CaptionsDialog
+    app.select([vid])
+    cd = CaptionsDialog(app)
+    check("Auto Captions offers the selected clip(s) only", cd._mode() == "clips" and cd._range() == (a0, b0))
+    cd.close()
+    yield 200
+
+    # ---- multi-camera ---------------------------------------------------------
+    done = []
+    app.import_paths([f"{TMP}/camA.mp4", f"{TMP}/camB.mp4"], then=done.append)
+    while not done:
+        yield 100
+    cams = [m for m in app.project.media.values() if m.name in ("camA.mp4", "camB.mp4")]
+    cams.sort(key=lambda m: m.name)
+    mc_dlg = MulticamDialog(app, cams)
+    mc_dlg.present()
+    mc_dlg.accept()
+    for _ in range(100):
+        if mc_dlg.job is None:
+            break
+        yield 100
+    yield 600
+    inner = next((s_ for s_ in app.project.sequences.values() if s_.multicam), None)
+    check("Create Multi-Camera Sequence makes a camera per clip", inner is not None and len(inner.video_tracks) == 2)
+    if inner is not None:
+        starts = [t.clips[0].start for t in inner.video_tracks]
+        check("the cameras are lined up by their sound", starts == [0, 45], starts)
+        check("…and a sequence to cut it in opens", app.seq is not inner and app.seq.end() == inner.end()
+              and all(c.angle == 0 for _, c in app.seq.all_clips()))
+        mcp = win.multicam_panel
+        check("the Multi-Camera panel shows", win.current_tab("multicam") == "multicam")
+        app.set_playhead(60)
+        for _ in range(50):
+            if len(mcp.images) == 2:
+                break
+            yield 100
+        check("…every camera at the playhead", len(mcp.images) == 2 and mcp.target is not None, len(mcp.images))
+        app.clear_selection()
+        app.do("camera_2")
+        yield 600
+        vclips = sorted(app.seq.video_tracks[0].clips, key=lambda c: c.start)
+        check("pressing 2 cuts to camera 2 at the playhead", [(c.start, c.angle) for c in vclips] == [(0, 0), (60, 1)]
+              and all(c.angle == 1 for c in app.seq.audio_tracks[0].clips if c.start == 60))
+        frame = app.frames.get("program")
+        if frame and frame[0]:
+            img = __import__("numpy").frombuffer(frame[0], dtype="uint8").reshape(frame[2], frame[1], 3)
+            mid = img[frame[2] // 2, frame[1] // 2]
+            check("…and the Program monitor shows camera 2", mid[2] > 150 and mid[0] < 80, mid)
+        app.set_playhead(100)
+        app.program.play()
+        yield 400
+        app.do("camera_1")
+        yield 300
+        check("switches while playing wait for playback to stop", len(app.camera_cuts) == 1)
+        app.program.pause()
+        yield 600
+        check("…then become cuts", len(app.seq.video_tracks[0].clips) == 3 and not app.camera_cuts,
+              [(c.start, c.angle) for c in app.seq.video_tracks[0].clips])
+        last = max(app.seq.video_tracks[0].clips, key=lambda c: c.start)
+        app.select([last.id])
+        app.set_playhead(last.start + 10)
+        app.do("camera_2")
+        yield 400
+        last = max(app.seq.video_tracks[0].clips, key=lambda c: c.start)
+        check("a selected multi-camera clip changes camera without a cut",
+              len(app.seq.video_tracks[0].clips) == 3 and last.angle == 1)
+        app.set_multicam_audio(inner, "all")
+        yield 400
+        check("the multi-camera sound can mix every camera", inner.multicam_audio == "all" and app.graph is not None)
+        app.activate_action("set_camera", GLib.Variant.new_int32(0))
+        yield 300
+        check("the clip menu's Camera items set the camera", max(app.seq.video_tracks[0].clips,
+                                                                 key=lambda c: c.start).angle == 0)
+
+    # ---- dockable panels ------------------------------------------------------
+    app.set_active_sequence(orig_seq)
+    yield 300
+    win.dock_panel("scopes", "program", "right")
+    yield 400
+    group = win.panel_group.get("scopes")
+    check("a panel docks beside another, splitting its group",
+          group is not None and group.keys == ["scopes"] and group is not win.panel_group["effects"]
+          and dockmod.leaf_of(win.state, "program")["tabs"] == ["program"])
+    tl_group = win.panel_group["timeline"]
+    tl_group._drop(None, PanelDrag("mixer"), 5, tl_group.get_height() / 2)
+    yield 400
+    check("dropping a tab on a group's edge docks it there", win.panel_group["mixer"].keys == ["mixer"]
+          and win.panel_group["timeline"].keys == ["timeline"])
+    tl_group = win.panel_group["timeline"]
+    tl_group._drop(None, PanelDrag("history"), tl_group.get_width() / 2, 4)
+    yield 400
+    check("dropping a tab on a group's tabs joins the group", win.panel_group["history"] is win.panel_group["timeline"])
+    win.float_panel("history")
+    yield 500
+    check("a panel floats in a window of its own", len(win.floats) == 1
+          and win.panel_group["history"].get_root() is win.floats[0])
+    win.floats[0].close()
+    yield 500
+    check("closing a floating window docks its panels back", not win.floats and "history" in win.panel_group
+          and win.panel_group["history"].get_root() is win)
+    win.close_panel("info")
+    yield 300
+    check("a panel can be closed", "info" not in win.panel_group and "info" not in dockmod.all_panels(win.state))
+    app.do("panel_info")
+    yield 300
+    check("its Window menu entry brings it back", "info" in win.panel_group)
+    custom = dockmod.panels(win.state["tree"])
+    app.do("workspace_audio")
+    yield 300
+    app.do("workspace_editing")
+    yield 400
+    check("each workspace keeps its own layout", dockmod.panels(win.state["tree"]) == custom)
+    win.hovered = win.panel_group["program"]
+    win.toggle_maximize()
+    yield 300
+    check("the group under the pointer maximises", list(win.panel_group) == ["program"])
+    win.toggle_maximize()
+    yield 300
+    check("…and restores", "timeline" in win.panel_group and "scopes" in win.panel_group)
+    yield 900
+    check("layouts are remembered between sessions", isinstance(app.prefs["dock_layouts"].get("editing"), dict)
+          and "scopes" in dockmod.all_panels(app.prefs["dock_layouts"]["editing"]))
+    app.do("reset_workspace")
+    yield 400
+    check("Reset Workspace Layout restores the starting layout", win.state == dockmod.default("editing"),
+          (win.state, dockmod.default("editing")))
 
     # ---- nesting, project panel, persistence --------------------------------
     first = app.project.media_for_sequence(app.seq.id)
