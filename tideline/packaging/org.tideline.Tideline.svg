@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f2630"/>
+      <stop offset="1" stop-color="#11151b"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="24" fill="url(#bg)"/>
+  <rect x="8.75" y="8.75" width="110.5" height="110.5" rx="23.25" fill="none" stroke="#2f3946" stroke-width="1.5"/>
+  <!-- three staggered clips on three tracks -->
+  <rect x="24" y="34" width="46" height="15" rx="4" fill="#3b79a8"/>
+  <rect x="48" y="56.5" width="56" height="15" rx="4" fill="#2fc6b5"/>
+  <rect x="24" y="79" width="34" height="15" rx="4" fill="#3c8a67"/>
+  <rect x="64" y="79" width="28" height="15" rx="4" fill="#3c8a67" opacity="0.7"/>
+  <!-- playhead -->
+  <rect x="75" y="24" width="3" height="80" rx="1.5" fill="#ff7a59"/>
+  <path d="M68 20h17v8l-8.5 9-8.5-9z" fill="#ff7a59"/>
+</svg>

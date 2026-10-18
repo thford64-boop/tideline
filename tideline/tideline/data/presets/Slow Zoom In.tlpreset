@@ -1,0 +1,20 @@
+{
+ "tideline_preset": 1,
+ "name": "Slow Zoom In",
+ "fps": 30,
+ "width": 1920,
+ "height": 1080,
+ "duration": 60,
+ "effects": [
+  {
+   "type": "pan_zoom",
+   "enabled": true,
+   "params": {
+    "start_scale": 100.0,
+    "end_scale": 115.0,
+    "ease": "sine"
+   },
+   "keyframes": {}
+  }
+ ]
+}

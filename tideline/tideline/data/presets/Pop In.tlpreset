@@ -1,0 +1,48 @@
+{
+ "tideline_preset": 1,
+ "name": "Pop In",
+ "fps": 30,
+ "width": 1920,
+ "height": 1080,
+ "duration": 60,
+ "effects": [
+  {
+   "type": "motion",
+   "enabled": true,
+   "params": {},
+   "keyframes": {
+    "scale": [
+     [
+      0,
+      0.0,
+      "back_out"
+     ],
+     [
+      18,
+      100.0,
+      "linear"
+     ]
+    ]
+   }
+  },
+  {
+   "type": "opacity",
+   "enabled": true,
+   "params": {},
+   "keyframes": {
+    "opacity": [
+     [
+      0,
+      0.0,
+      "linear"
+     ],
+     [
+      6,
+      100.0,
+      "linear"
+     ]
+    ]
+   }
+  }
+ ]
+}
