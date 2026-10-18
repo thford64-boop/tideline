@@ -234,6 +234,8 @@ class MonitorPanel(Gtk.Box):
             for ev in ("selection", "effects", "playhead", "tool"):
                 app.on(ev, self.view.queue_draw)
             app.on("safe_margins", lambda: self.safe_button.set_active(not self.safe_button.get_active()))
+            app.on("picker", lambda: self.view.set_cursor(
+                Gdk.Cursor.new_from_name("crosshair") if app.picker is not None else None))
             self.view.overlay = self._overlay
             drag = Gtk.GestureDrag()
             drag.connect("drag-begin", self._xf_begin)
@@ -408,6 +410,9 @@ class MonitorPanel(Gtk.Box):
             return
         app.focus = "program"
         sx, sy = self._to_seq(px, py)
+        if app.picker is not None:
+            app.picked(sx, sy)
+            return
         if app.tool == "type":
             app.cmd_new_title(offset=[round(sx), round(sy)])
             app.set_tool("select")

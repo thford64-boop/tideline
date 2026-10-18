@@ -129,6 +129,7 @@ class Clip:
     enabled: bool = True
     link_id: str | None = None
     label: int | None = None
+    angle: int | None = None         # camera shown, for a clip of a multi-camera sequence
     effects: list = field(default_factory=list)
 
     @property
@@ -214,6 +215,7 @@ class Track:
     sync_lock: bool = True
     height: int = 54
     captions: bool = False           # video track holding caption clips (one title per caption)
+    angle: int | None = None         # multi-camera audio track: the camera (video track) it belongs to
     volume: float = 0.0              # dB, audio tracks
     pan: float = 0.0                 # -100..100, audio tracks
     clips: list = field(default_factory=list)
@@ -305,6 +307,9 @@ class Sequence:
     markers: list = field(default_factory=list)
     in_point: int | None = None
     out_point: int | None = None                        # exclusive
+    caption_style: dict = field(default_factory=dict)   # how new captions look (see App.caption_style)
+    multicam: bool = False           # a multi-camera source: each video track is one camera
+    multicam_audio: str = "0"        # what it sounds like: "follow", "all", or an audio track index
     playhead: int = 0
     px_per_frame: float = 4.0
     scroll_x: float = 0.0
@@ -515,6 +520,13 @@ class Project:
         while f"{base} {n:02d}" in names:
             n += 1
         return f"{base} {n:02d}"
+
+    def multicam_of(self, media):
+        """The multi-camera sequence behind a project item, or None."""
+        if media is None or media.kind != "sequence":
+            return None
+        inner = self.sequences.get(media.sequence_id)
+        return inner if inner is not None and inner.multicam else None
 
     def media_frames(self, media, seq, speed=1.0):
         """Frames available from a media item in ``seq``'s timebase, or None

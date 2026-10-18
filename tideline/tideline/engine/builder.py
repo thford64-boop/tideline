@@ -16,6 +16,7 @@ exported frames use a plain builder and so always render the originals.
 import os
 from xml.sax.saxutils import escape
 
+from .. import multicam
 from .. import proxies as proxymod
 from .. import timeremap
 from .effects import EFFECTS, TRANSITIONS, fade_gain, gain_to_db
@@ -140,6 +141,18 @@ class Builder:
             length = producer.get_length()
         return profile, producer, max(1, length), refs + [profile]
 
+    def build_angle(self, seq, angle, width=320):
+        """One camera of a multi-camera sequence, small, for the camera grid.
+        Returns its Graph."""
+        height = max(16, int(round(width * seq.height / seq.width / 2)) * 2)
+        profile = make_profile(width, height, seq.fps_num, seq.fps_den)
+        self.cache.begin()
+        graph = Graph(seq, profile)
+        self._build_into(graph, seq, profile, 0, (seq.id,), view=(angle, "video", "all"))
+        self.cache.end()
+        graph.keep.append(profile)
+        return graph
+
     def source_path(self, media):
         """(file to read for a media item, True when it is a proxy). A proxy
         also stands in for an original that is offline."""
@@ -150,8 +163,16 @@ class Builder:
         return media.path, False
 
     # -- sequence --------------------------------------------------------
-    def _build_into(self, graph, seq, profile, depth, chain):
+    def _build_into(self, graph, seq, profile, depth, chain, view=None):
+        """Build ``seq`` into a tractor. ``view`` (angle, track kind, audio
+        mode) builds one camera of a multi-camera sequence: its video track
+        alone, or the audio tracks its audio mode picks."""
         ctx = {"width": profile.width(), "height": profile.height(), "fps": seq.fps}
+        video_tracks, audio_tracks = seq.video_tracks, seq.audio_tracks
+        if view is not None:
+            angle, kind, audio = view
+            video_tracks = seq.video_tracks[angle:angle + 1] if kind == "video" else []
+            audio_tracks = multicam.audio_tracks(seq, angle, audio) if kind == "audio" else []
         tractor = mlt.Tractor(profile)
         length = max(1, seq.end())
         bg = mlt.Producer(profile, "color:#ff000000" if depth == 0 else "color:#00000000")
@@ -160,9 +181,9 @@ class Builder:
         tractor.set_track(bg, 0)
         graph.keep += [tractor, bg]
         index = 1
-        for track in seq.video_tracks:
+        for track in video_tracks:
             pl = self._build_track(graph, seq, track, profile, ctx, depth, chain)
-            pl.set("hide", 3 if track.hidden else 2)
+            pl.set("hide", 3 if track.hidden and view is None else 2)
             tractor.set_track(pl, index)
             blend = mlt.Transition(profile, "frei0r.cairoblend")
             if not blend.is_valid():
@@ -170,8 +191,8 @@ class Builder:
             tractor.plant_transition(blend, 0, index)
             graph.keep += [pl, blend]
             index += 1
-        solo = any(t.solo for t in seq.audio_tracks)
-        for track in seq.audio_tracks:
+        solo = any(t.solo for t in audio_tracks)
+        for track in audio_tracks:
             pl = self._build_track(graph, seq, track, profile, ctx, depth, chain)
             vol = mlt.Filter(profile, "volume")
             pans = []
@@ -277,11 +298,16 @@ class Builder:
                profile.frame_rate_den(), media.id, path, round(speed, 6), track.id, lane,
                self._revision(media))
         remap = timeremap.remap_of(clip) if media.kind in timeremap.MEDIA_KINDS else None
+        inner = self.project.multicam_of(media)
+        view = (max(0, int(clip.angle or 0)), track.kind, inner.multicam_audio) if inner is not None else None
+        if view is not None:
+            key += ("camera",) + view
         if remap is not None and path and os.path.exists(path):
             key += ("remap", clip.id, remap.signature)
             parent = self.cache.get(key, lambda: self._make_remapped(media, profile, seq, clip, remap))
         else:
-            parent = self.cache.get(key, lambda: self._make_producer(media, profile, speed, ctx, depth, chain))
+            parent = self.cache.get(key, lambda: self._make_producer(media, profile, speed, ctx, depth, chain,
+                                                                     view))
         if parent is None or not parent.is_valid():
             return None
         src_in = max(0, clip.in_point + (s - clip.start))
@@ -369,8 +395,9 @@ class Builder:
             refs.append(fix)
         return p, refs
 
-    def _make_producer(self, media, profile, speed, ctx, depth, chain):
-        """Create the parent producer for a media item. Returns (producer, refs)."""
+    def _make_producer(self, media, profile, speed, ctx, depth, chain, view=None):
+        """Create the parent producer for a media item. Returns (producer, refs).
+        ``view`` picks one camera of a multi-camera sequence."""
         refs = [profile]
         kind = media.kind
         if kind in ("video", "audio", "image"):
@@ -411,7 +438,7 @@ class Builder:
                 p.set("out", UNLIMITED - 1)
                 return p, refs
             sub = Graph(inner, profile)
-            tractor, _ = self._build_into(sub, inner, profile, depth + 1, chain + (inner.id,))
+            tractor, _ = self._build_into(sub, inner, profile, depth + 1, chain + (inner.id,), view)
             return tractor, refs + [sub]
         if kind == "tone":
             p = mlt.Producer(profile, "tone")

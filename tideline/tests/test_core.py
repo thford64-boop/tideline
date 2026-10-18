@@ -459,8 +459,13 @@ class EverythingKeyframes(unittest.TestCase):
     def test_every_parameter_can_be_keyframed(self):
         fixed = [(d.key, p.name) for d in EFFECTS.values() for p in d.params if not p.key]
         # Uniform Scale only links two rows; Frame Blending picks how the whole
-        # remapped clip is drawn; RGB Curves are edited as a whole in their editor.
-        self.assertEqual(fixed, [("motion", "uniform"), ("time_remap", "blend"), ("curves", "curves")])
+        # remapped clip is drawn; RGB Curves are edited as a whole in their editor;
+        # a title's animations are themselves movement over time; and the colour
+        # wheels, hue curves and secondary are baked into one LUT each.
+        luts = [(k, p.name) for k in ("wheels", "hue_curves", "secondary") for p in EFFECTS[k].params]
+        self.assertEqual(fixed, [("motion", "uniform"), ("time_remap", "blend"),
+                                 ("text", "anim_in"), ("text", "anim_out"), ("text", "anim_time"),
+                                 ("curves", "curves")] + luts)
 
     def test_segments_follow_stepped_keyframes(self):
         text, ctx = EFFECTS["text"], {"cut": (0, 99)}

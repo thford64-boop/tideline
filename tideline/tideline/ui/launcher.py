@@ -8,6 +8,7 @@ import time
 from gi.repository import Gio, GLib, Gtk, Pango, PangoCairo
 
 from .. import APP_ID, APP_NAME, PROJECT_EXT, VERSION
+from .. import dock
 from .. import proxies as proxymod
 from .. import settings as st
 from ..model import DEFAULT_SETTINGS
@@ -31,8 +32,6 @@ QUALITY_TEXT = {
     "balanced": "Half-resolution preview with smooth scaling. A good default for most computers.",
     "quality": "Full-resolution, sharp preview that shows every frame. Needs a fast machine.",
 }
-TAB_NAMES = {"source": "Source", "effect_controls": "Effect Controls", "mixer": "Audio Mixer",
-             "project": "Project", "effects": "Effects", "scopes": "Scopes"}
 
 
 # -- pieces ------------------------------------------------------------------
@@ -47,52 +46,54 @@ class LayoutPreview(Gtk.DrawingArea):
         self.set_draw_func(self._draw)
 
     def _draw(self, area, cr, w, h):
-        ws = WORKSPACES[self.key]
         cr.set_source_rgba(*theme.rgb(theme.BG0))
         cr.rectangle(0, 0, w, h)
         cr.fill()
-        g = 3
-        top_h = (h - 3 * g) * ws["top"]
-        left_w = (w - 3 * g) * ws["left"]
-        bl_w = (w - 3 * g) * ws["bottom_left"]
-        y2 = g + top_h + g
-        panels = [
-            (g, g, left_w, top_h, TAB_NAMES[ws["tabs"]["a"]], theme.BG2),
-            (2 * g + left_w, g, w - 3 * g - left_w, top_h, "Program", theme.BG2),
-            (g, y2, bl_w, h - y2 - g, TAB_NAMES[ws["tabs"]["c"]], theme.BG1),
-            (2 * g + bl_w, y2, w - 3 * g - bl_w, h - y2 - g, "Timeline", theme.BG1),
-        ]
         layout = PangoCairo.create_layout(cr)
         layout.set_font_description(Pango.FontDescription("Sans 9px"))
-        for i, (x, y, pw, ph, name, bg) in enumerate(panels):
-            cr.set_source_rgba(*theme.rgb(bg))
-            cr.rectangle(x, y, pw, ph)
+        self._node(cr, layout, WORKSPACES[self.key]["tree"], 0, 0, w, h)
+
+    def _node(self, cr, layout, node, x, y, w, h, g=3):
+        if "tabs" not in node:
+            if node["split"] == "h":
+                aw = (w - g) * node["pos"]
+                self._node(cr, layout, node["a"], x, y, aw + g, h)
+                self._node(cr, layout, node["b"], x + aw + g, y, w - aw - g, h)
+            else:
+                ah = (h - g) * node["pos"]
+                self._node(cr, layout, node["a"], x, y, w, ah + g)
+                self._node(cr, layout, node["b"], x, y + ah + g, w, h - ah - g)
+            return
+        x, y, pw, ph = x + g, y + g, w - 2 * g, h - 2 * g
+        name = node["active"]
+        cr.set_source_rgba(*theme.rgb(theme.BG2 if y < 10 else theme.BG1))
+        cr.rectangle(x, y, pw, ph)
+        cr.fill()
+        cr.set_source_rgba(*theme.rgb(theme.ACCENT if len(node["tabs"]) > 1 else theme.BG4))
+        cr.rectangle(x, y, pw, 2)
+        cr.fill()
+        if name in ("program", "source", "multicam"):
+            # a picture inside the monitor
+            cr.set_source_rgba(*theme.rgb(theme.BG0))
+            cr.rectangle(x + pw * 0.15, y + 14, pw * 0.7, max(4, ph - 26))
             cr.fill()
-            cr.set_source_rgba(*theme.rgb(theme.ACCENT if i in (0, 2) else theme.BG4))
-            cr.rectangle(x, y, pw, 2)
+        elif name == "timeline":
+            for row in range(4):
+                ty = y + 16 + row * 9
+                if ty + 6 > y + ph:
+                    break
+                cr.set_source_rgba(*theme.rgb(_lane_colour(row)))
+                cr.rectangle(x + 8 + row * 9, ty, pw * 0.45, 6)
+                cr.fill()
+            cr.set_source_rgba(*theme.rgb(theme.PLAYHEAD))
+            cr.rectangle(x + pw * 0.38, y + 12, 1.2, ph - 14)
             cr.fill()
-            if name == "Program" or name == "Source":
-                # a picture inside the monitor
-                cr.set_source_rgba(*theme.rgb(theme.BG0))
-                cr.rectangle(x + pw * 0.15, y + 14, pw * 0.7, max(4, ph - 26))
-                cr.fill()
-            elif name == "Timeline":
-                for row in range(4):
-                    ty = y + 16 + row * 9
-                    if ty + 6 > y + ph:
-                        break
-                    cr.set_source_rgba(*theme.rgb(_lane_colour(row)))
-                    cr.rectangle(x + 8 + row * 9, ty, pw * 0.45, 6)
-                    cr.fill()
-                cr.set_source_rgba(*theme.rgb(theme.PLAYHEAD))
-                cr.rectangle(x + pw * 0.38, y + 12, 1.2, ph - 14)
-                cr.fill()
-            layout.set_text(name, -1)
-            layout.set_width(int((pw - 8) * Pango.SCALE))
-            layout.set_ellipsize(Pango.EllipsizeMode.END)
-            cr.set_source_rgba(*theme.rgb(theme.TEXT_DIM))
-            cr.move_to(x + 4, y + 3)
-            PangoCairo.show_layout(cr, layout)
+        layout.set_text(dock.PANELS.get(name, name), -1)
+        layout.set_width(int(max(1, pw - 8) * Pango.SCALE))
+        layout.set_ellipsize(Pango.EllipsizeMode.END)
+        cr.set_source_rgba(*theme.rgb(theme.TEXT_DIM))
+        cr.move_to(x + 4, y + 3)
+        PangoCairo.show_layout(cr, layout)
 
 
 def _lane_colour(row):

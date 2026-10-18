@@ -14,6 +14,7 @@ import math
 from dataclasses import dataclass, field
 
 from .. import curves as curvesmod
+from .. import grading
 from .. import keyframes as kf
 from .. import procedural as proc
 from . import mltlib
@@ -28,6 +29,7 @@ class Param:
     name: str
     label: str
     type: str = "float"      # float | int | bool | color | choice | text | font | file | point | curves
+    #                          | huecurves | wheel
     default: object = 0.0
     min: float | None = None
     max: float | None = None
@@ -114,6 +116,8 @@ class EffectDef:
     motion: object = None           # callable(effect, ctx) -> fn(frame) -> (dx, dy, degrees, scale)
     preview: object = None          # callable(effect, ctx) -> [(label, fn(frame) -> value)]
     baked: bool = False             # computed per frame here, so no parameter needs segments
+    panel: str | None = None        # extra editor Effect Controls shows above the parameters
+    steps: object = None            # callable(effect, ctx) -> frames where the filters must change
 
     def fits(self, kind):
         """True when the effect can sit on a track of that kind."""
@@ -143,10 +147,11 @@ class EffectDef:
         stretch, and the result is ``[None]`` when nothing is stepped at all."""
         stepped = [(p, effect.keyframes.get(p.name)) for p in self.params if p.key and p.segmented]
         stepped = [(p, kfs) for p, kfs in stepped if kfs]
-        if self.baked or not stepped:
+        extra = self.steps(effect, ctx) if self.steps is not None else ()
+        if self.baked or not (stepped or extra):
             return [None]
         lo, hi = (int(v) for v in ctx.get("cut") or ctx.get("range") or (0, 0))
-        starts = {lo}
+        starts = {lo} | {t for t in extra if lo < t <= hi}
         for p, kfs in stepped:
             if p.hold:
                 starts.update(k[0] for k in kfs[1:] if lo < k[0] <= hi)    # the first key also rules before it
@@ -199,6 +204,10 @@ class EffectDef:
             return [ctx["width"] / 2, ctx["height"] / 2]
         if p.type == "curves":
             return curvesmod.default()
+        if p.type == "huecurves":
+            return grading.default_hue_curves()
+        if p.type == "wheel":
+            return list(grading.NEUTRAL_WHEEL)
         return p.default
 
 
@@ -284,6 +293,180 @@ def _apply_opacity(filters, effect, ctx):
     blend.set("disable", 1 if (mode == "normal" or not effect.enabled) else 0)
 
 
+TEXT_ANIMS = [("none", "None"), ("fade", "Fade"), ("pop", "Pop"), ("zoom", "Zoom"), ("slide_up", "Slide Up"),
+              ("slide_down", "Slide Down"), ("slide_left", "Slide Left"), ("slide_right", "Slide Right"),
+              ("drop", "Drop"), ("typewriter", "Typewriter"), ("words", "Word by Word")]
+TEXT_ANIMS_OUT = [a for a in TEXT_ANIMS if a[0] not in ("typewriter", "words")]
+_TYPING = {"typewriter": 1, "words": 2}       # typing in by letters or by words
+_OUT_MIRROR = {"slide_up": "slide_down", "slide_down": "slide_up", "slide_left": "slide_right",
+               "slide_right": "slide_left", "drop": "fall"}
+_SPACES = [("\u2002", 1 / 2), ("\u2004", 1 / 3), ("\u2005", 1 / 4), ("\u2006", 1 / 6)]   # en, ⅓, ¼, ⅙ em
+
+
+def _typing(effect, ctx):
+    """(mode, units, first frame, frames to type them all) of a title typing
+    itself in, or None."""
+    mode = _TYPING.get(effect.params.get("anim_in", "none"))
+    if not mode:
+        return None
+    text = str(effect.value("text", None, "") or "")
+    units = len(text.split()) if mode == 2 else len("".join(text.split()))
+    if units < 2:
+        return None
+    first = int((ctx.get("clip") or ctx.get("range") or (0, 0))[0])
+    return mode, units, first, max(1.0, float(effect.params.get("anim_time", 0.3)) * ctx["fps"])
+
+
+def _typed_units(typing, t):
+    mode, units, first, frames = typing
+    return max(1, min(units, int((t - first) * units / frames) + 1))
+
+
+def _typing_steps(effect, ctx):
+    """Frames where a typing title shows one more letter or word: each needs
+    its own text filter, since qtext reads its text once. (qtext's own
+    typewriter mode keeps count between frames and goes wrong as soon as the
+    playhead moves backwards, so it is not used.)"""
+    typing = _typing(effect, ctx)
+    if typing is None:
+        return ()
+    mode, units, first, frames = typing
+    return sorted({first + math.ceil((k - 1) * frames / units) for k in range(2, units + 1)})
+
+
+def _em_width(text, family, size, bold, italic):
+    """Width of ``text`` in ems of the font, measured with Pango (None if it
+    is not available)."""
+    key = (text, family, int(size), bool(bold), bool(italic))
+    if key not in _EM_CACHE:
+        try:
+            import cairo
+            import gi
+            gi.require_version("Pango", "1.0")
+            gi.require_version("PangoCairo", "1.0")
+            from gi.repository import Pango, PangoCairo
+            layout = PangoCairo.create_layout(cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1)))
+            desc = Pango.FontDescription()
+            desc.set_family(family or "Sans")
+            desc.set_absolute_size(max(1, int(size)) * Pango.SCALE)
+            desc.set_weight(Pango.Weight.BOLD if bold else Pango.Weight.NORMAL)
+            desc.set_style(Pango.Style.ITALIC if italic else Pango.Style.NORMAL)
+            layout.set_font_description(desc)
+            layout.set_text(text, -1)
+            _EM_CACHE[key] = layout.get_extents()[1].width / Pango.SCALE / max(1, int(size))
+        except (ImportError, ValueError):
+            _EM_CACHE[key] = None
+        if len(_EM_CACHE) > 4000:
+            _EM_CACHE.clear()
+    return _EM_CACHE[key]
+
+
+_EM_CACHE = {}
+
+
+def _blank(width_em):
+    """Spaces of fixed widths (em, en, ⅓, ¼, ⅙ em) adding up to about ``width_em``."""
+    whole = int(width_em)
+    rest, best = width_em - whole, (width_em - whole, "")
+    for a in range(2):
+        for b in range(3):
+            for c in range(4):
+                for d in range(6):
+                    w = a / 2 + b / 3 + c / 4 + d / 6
+                    if abs(w - rest) < best[0]:
+                        best = (abs(w - rest), _SPACES[0][0] * a + _SPACES[1][0] * b + _SPACES[2][0] * c
+                                + _SPACES[3][0] * d)
+    return "\u2003" * whole + best[1]
+
+
+def typed_text(text, mode, shown, family="Sans", size=96, bold=False, italic=False):
+    """``text`` with only its first ``shown`` letters (mode 1) or words (mode 2)
+    visible. The rest is replaced by blank space of the same width, so lines
+    keep their place while the text types itself in."""
+    count, cut = 0, len(text)
+    in_word = False
+    for i, ch in enumerate(text):
+        unit = not ch.isspace() and (mode == 1 or not in_word)
+        in_word = not ch.isspace()
+        if unit:
+            count += 1
+            if count > shown:
+                cut = i
+                break
+    out = []
+    pos = 0
+    for line in text.split("\n"):
+        end = pos + len(line)
+        if end <= cut:
+            out.append(line)
+        else:
+            vis = line[:max(0, cut - pos)]
+            em = _em_width(line[len(vis):], family, size, bold, italic)
+            out.append(vis + ("" if em is None else _blank(em)))
+        pos = end + 1
+    return "\n".join(out)
+
+
+def text_box(effect, t, W, H):
+    """Estimated (x, y, w, h) of a title's text in the frame, for animating
+    it about its own centre."""
+    p = lambda name, default: effect.value(name, t, default)
+    lines = str(p("text", "Title") or " ").split("\n")
+    size, pad = float(p("size", 96)), float(p("padding", 0))
+    w = max(len(line) for line in lines) * size * (0.6 if p("bold", False) else 0.55) + 2 * pad
+    h = len(lines) * size * 1.25 + 2 * pad
+    off = p("offset", [0.0, 0.0]) or [0.0, 0.0]
+    halign, valign = p("halign", "center"), p("valign", "middle")
+    x = off[0] + (0.0 if halign == "left" else W - w if halign == "right" else (W - w) / 2)
+    y = off[1] + (0.0 if valign == "top" else H - h if valign == "bottom" else (H - h) / 2)
+    return x, y, w, h
+
+
+def _anim_state(kind, u, dist):
+    """(dx, dy, scale, opacity) of a text animation ``u`` of the way (0..1)
+    from its start to the resting text."""
+    e = kf.ease(u, "ease_out")
+    if kind == "fade":
+        return 0.0, 0.0, 1.0, kf.ease(u, "sine")
+    if kind == "pop":
+        return 0.0, 0.0, max(0.01, kf.ease(u, "back_out")), min(1.0, u * 3)
+    if kind == "zoom":
+        return 0.0, 0.0, 0.4 + 0.6 * e, e
+    if kind == "drop":
+        return 0.0, -dist * 1.6 * (1.0 - kf.ease(u, "bounce_out")), 1.0, min(1.0, u * 4)
+    if kind == "fall":
+        return 0.0, dist * 2.0 * (1.0 - u) ** 2, 1.0, min(1.0, u * 3)
+    slide = {"slide_up": (0, 1), "slide_down": (0, -1), "slide_left": (1, 0), "slide_right": (-1, 0)}.get(kind)
+    if slide:
+        return slide[0] * dist * (1.0 - e), slide[1] * dist * (1.0 - e), 1.0, e
+    return 0.0, 0.0, 1.0, 1.0
+
+
+def text_animation(effect, ctx):
+    """How a title animates: (frames of the in animation, frames of the out
+    animation, fn(frame) -> (dx, dy, scale, opacity)). Frames are the clip's
+    own source frames."""
+    first, last = (int(v) for v in ctx.get("clip") or ctx.get("range") or (0, 0))
+    a_in, a_out = effect.params.get("anim_in", "none"), effect.params.get("anim_out", "none")
+    n = max(2, int(round(float(effect.params.get("anim_time", 0.3)) * ctx["fps"])))
+    room = max(2, (last - first + 1) // (2 if a_in != "none" and a_out != "none" else 1))
+    n_in = 0 if a_in in ("none",) + tuple(_TYPING) else min(n, room)
+    n_out = 0 if a_out == "none" else min(n, room)
+    t0 = segment_of(ctx)[0]
+    dist = max(float(effect.value("size", t0, 96)) * 1.2, ctx["height"] * 0.04)
+
+    def at(t):
+        dx, dy, sc, op = 0.0, 0.0, 1.0, 1.0
+        for kind, n_, u in ((a_in, n_in, (t - first) / max(1, n_in)),
+                            (_OUT_MIRROR.get(a_out, a_out), n_out, (last - t) / max(1, n_out))):
+            if n_ and u < 1.0:
+                ddx, ddy, dsc, dop = _anim_state(kind, max(0.0, u), dist)
+                dx, dy, sc, op = dx + ddx, dy + ddy, sc * dsc, op * dop
+        return dx, dy, sc, op
+
+    return n_in, n_out, at
+
+
 def _apply_text(filters, effect, ctx):
     f = filters[0]
     W, H = ctx["width"], ctx["height"]
@@ -292,16 +475,22 @@ def _apply_text(filters, effect, ctx):
     f.set("disable", 0 if effect.enabled else 1)
     # The text, its font and its metrics are read once per filter: keyframes
     # on them split the effect into segments. Colours and the offset animate.
-    f.set("argument", p("text", "Title") or " ")
+    text = p("text", "Title") or " "
+    typing = _typing(effect, ctx)
+    if typing is not None:
+        text = typed_text(text, typing[0], _typed_units(typing, t0 if t0 is not None else typing[2]),
+                          p("font", "Sans"), p("size", 96), p("bold", False), p("italic", False))
+    f.set("argument", text)
     f.set("family", p("font", "Sans"))
     f.set("size", int(round(p("size", 96))))
     f.set("weight", 700 if p("bold", False) else 400)
     f.set("style", "italic" if p("italic", False) else "normal")
+    f.set("underline", 1 if p("underline", False) else 0)
     for prop, name, default in (("fgcolour", "fill", "#ffffffff"), ("bgcolour", "background", "#00000000"),
                                 ("olcolour", "stroke", "#000000ff")):
         kfs = effect.keyframes.get(name)
         f.set(prop, kf.to_mlt(kfs, color_to_mlt, shift) if kfs else color_to_mlt(effect.params.get(name, default)))
-    f.set("outline", int(max(0, min(3, round(p("stroke_width", 0))))))
+    f.set("outline", int(max(0, min(20, round(p("stroke_width", 0))))))
     f.set("pad", int(round(p("padding", 0))))
     f.set("halign", p("halign", "center"))
     f.set("valign", p("valign", "middle"))
@@ -312,6 +501,53 @@ def _apply_text(filters, effect, ctx):
 
     times = kf.sample_times(effect.keyframes.get("offset"))
     f.set("geometry", kf.sampled_to_mlt(times, geom, shift) if times else geom(None))
+    if len(filters) > 1:
+        _apply_text_motion(f, filters[1:], effect, ctx, shift)
+
+
+def _apply_text_motion(text_filter, movers, effect, ctx, text_shift):
+    """The in and out animations: an affine filter limited to each one's
+    frames moves and scales the text about its centre; its opacity fades
+    the text filter itself."""
+    W, H = ctx["width"], ctx["height"]
+    first, last = (int(v) for v in ctx.get("clip") or ctx.get("range") or (0, 0))
+    n_in, n_out, at = text_animation(effect, ctx)
+    seg = ctx.get("segment")
+    limited = bool(seg and seg[1] is not None)       # the builder limits every filter to the segment
+    x, y, w, h = text_box(effect, segment_of(ctx)[0], W, H)
+    ax, ay = x + w / 2, y + h / 2
+    windows = [(first, first + n_in - 1) if n_in else None, (last - n_out + 1, last) if n_out else None]
+    fades = []
+    for mover, window in zip(movers, windows):
+        for k, v in _MOTION_STATIC.items():
+            mover.set(k, v)
+        if window is None or not effect.enabled:
+            mover.set("disable", 1)
+            continue
+        lo, hi = window
+        if limited:
+            shift, keys = -seg[0], range(max(lo - 1, seg[0]), min(hi + 1, seg[1]) + 1)
+        else:
+            mover.set("in", lo)
+            mover.set("out", max(hi, lo + 1))
+            shift, keys = -lo, range(lo, hi + 1)
+        rects = []
+        for t in keys:
+            dx, dy, sc, op = at(t)
+            rects.append(f"{t + shift}={ax - ax * sc + dx:.2f} {ay - ay * sc + dy:.2f} {W * sc:.2f} {H * sc:.2f} 1")
+            fades.append((t, op))
+        mover.set("transition.rect", ";".join(rects) or f"0 0 {W} {H} 1")
+        mover.set("transition.distort", 0)
+        mover.set("disable", 0)
+    if fades and any(op < 0.999 for _, op in fades):
+        fades = sorted(dict(fades).items())
+        if not limited:
+            fades = [(t, op) for t, op in fades] + ([(first + n_in, 1.0)] if n_in else []) \
+                + ([(last - n_out, 1.0)] if n_out else [])
+            fades = sorted(dict(fades).items())
+        text_filter.set("opacity", ";".join(f"{t + text_shift}={op:.4f}" for t, op in fades))
+    else:
+        text_filter.set("opacity", 1.0)
 
 
 def _apply_crop(filters, effect, ctx):
@@ -344,6 +580,31 @@ def _apply_curves(filters, effect, ctx):
     for key, _ in curvesmod.CHANNELS:
         f.set("av." + key, curvesmod.to_ffmpeg(value[key]))
     f.set("av.interp", "pchip")
+
+
+def _lut_applier(kind):
+    """Applier for a grade baked into a 3D LUT (see grading.py)."""
+    def apply(filters, effect, ctx):
+        f = filters[0]
+        path = grading.lut_file(kind, effect.params)
+        if path is None:
+            f.set("disable", 1)
+            return
+        f.set("av.file", path)
+        f.set("av.interp", "tetrahedral")
+        f.set("disable", 0 if effect.enabled else 1)
+    return apply
+
+
+def _still(*params):
+    """Parameters that cannot be keyframed: the grade they shape is a LUT."""
+    for p in params:
+        p.key = False
+    return list(params)
+
+
+def _wheel(name, label):
+    return Param(name, label, "wheel", [0.0, 0.0, 0.0], key=False)
 
 
 def _apply_volume(filters, effect, ctx):
@@ -572,6 +833,8 @@ def _db_to_linear(v):
     return 10 ** (float(v) / 20.0)
 
 
+_MOTION_STATIC = {"background": "color:#00000000", "transition.fill": 1, "transition.valign": "middle",
+                  "transition.halign": "center", "transition.threads": 0}
 HALIGN = [("left", "Left"), ("center", "Centre"), ("right", "Right")]
 VALIGN = [("top", "Top"), ("middle", "Middle"), ("bottom", "Bottom")]
 
@@ -616,25 +879,28 @@ _reg(EffectDef("time_remap", "Time Remapping", "Fixed", "any", [], [
 ], hidden=True, stage=0, custom=lambda filters, effect, ctx: None))
 
 # -- text -----------------------------------------------------------------
-_reg(EffectDef("text", "Text", "Generate", "video", ["qtext"], [
+# One qtext filter draws the text; two affine filters, each limited to its
+# frames, play the in and out animations.
+_reg(EffectDef("text", "Text", "Generate", "video", ["qtext", "affine", "affine"], [
     Param("text", "Text", "text", "Title"),
     Param("font", "Font", "font", "Sans"),
     I("size", "Size", 96, 4, 800, unit="px", anim="bake"),
     B("bold", "Bold", False),
     B("italic", "Italic", False),
+    B("underline", "Underline", False),
     C("fill", "Fill", "#ffffffff"),
-    C("stroke", "Stroke", "#000000ff"),
-    I("stroke_width", "Stroke Width", 0, 0, 3, anim="bake"),
+    C("stroke", "Outline", "#000000ff"),
+    I("stroke_width", "Outline Width", 0, 0, 20, anim="bake"),
     C("background", "Background", "#00000000"),
     I("padding", "Padding", 0, 0, 200, unit="px", anim="bake"),
     CH("halign", "Align", HALIGN, "center"),
     CH("valign", "Vertical Align", VALIGN, "middle"),
     Param("offset", "Offset", "point", [0.0, 0.0], unit="px"),
-], custom=_apply_text))
+    *_still(CH("anim_in", "Animate In", TEXT_ANIMS, "none"), CH("anim_out", "Animate Out", TEXT_ANIMS_OUT, "none"),
+            F("anim_time", "Animation Time", 0.3, 0.04, 10.0, unit="s", step=0.02, digits=2)),
+], custom=_apply_text, steps=_typing_steps))
 
 # -- video: animate -------------------------------------------------------
-_MOTION_STATIC = {"background": "color:#00000000", "transition.fill": 1, "transition.valign": "middle",
-                  "transition.halign": "center", "transition.threads": 0}
 _AMOUNT = lambda: F("amount", "Amount", 100.0, 0.0, 400.0, unit="%")
 _PAN_EASES = [("linear", "Linear"), ("ease", "Ease In/Out"), ("ease_in", "Ease In"), ("ease_out", "Ease Out"),
               ("sine", "Sine In/Out"), ("expo_out", "Expo Out"), ("back_out", "Overshoot")]
@@ -774,6 +1040,35 @@ _reg(
     EffectDef("curves", "RGB Curves", "Color", "video", ["avfilter.curves"], [
         Param("curves", "Curves", "curves", None, key=False),
     ], custom=_apply_curves),
+    # Colour wheels, hue curves and the secondary are baked into 3D LUTs.
+    EffectDef("wheels", "Colour Wheels", "Color", "video", ["avfilter.lut3d"], [
+        _wheel("lift", "Lift"), _wheel("gamma", "Gamma"), _wheel("gain", "Gain"), _wheel("offset", "Offset"),
+        *_still(F("contrast", "Contrast", 100.0, 0.0, 200.0, unit="%"),
+                F("pivot", "Pivot", 43.5, 0.0, 100.0, unit="%"),
+                F("saturation", "Saturation", 100.0, 0.0, 200.0, unit="%")),
+    ], custom=_lut_applier("wheels")),
+    EffectDef("hue_curves", "Hue / Saturation Curves", "Color", "video", ["avfilter.lut3d"], [
+        Param("curves", "Curves", "huecurves", None, key=False),
+    ], custom=_lut_applier("hue_curves")),
+    EffectDef("secondary", "Secondary Correction", "Color", "video", ["avfilter.lut3d"], _still(
+        B("use_hue", "Qualify Hue", True),
+        F("hue", "Hue", 120.0, 0.0, 360.0, unit="°"),
+        F("hue_width", "Hue Width", 50.0, 0.0, 360.0, unit="°"),
+        F("hue_soft", "Hue Softness", 30.0, 0.0, 180.0, unit="°"),
+        B("use_sat", "Qualify Saturation", True),
+        F("sat_low", "Saturation Low", 15.0, 0.0, 100.0, unit="%"),
+        F("sat_high", "Saturation High", 100.0, 0.0, 100.0, unit="%"),
+        F("sat_soft", "Saturation Softness", 10.0, 0.0, 50.0, unit="%"),
+        B("use_luma", "Qualify Luma", True),
+        F("luma_low", "Luma Low", 0.0, 0.0, 100.0, unit="%"),
+        F("luma_high", "Luma High", 100.0, 0.0, 100.0, unit="%"),
+        F("luma_soft", "Luma Softness", 10.0, 0.0, 50.0, unit="%"),
+        B("invert", "Invert Selection", False),
+        CH("view", "Show", grading.MASK_VIEWS),
+        F("hue_shift", "Hue Shift", 0.0, -180.0, 180.0, unit="°"),
+        F("saturation", "Saturation", 100.0, 0.0, 300.0, unit="%"),
+        F("lightness", "Lightness", 0.0, -100.0, 100.0),
+    ) + [_wheel("tint", "Tint")], custom=_lut_applier("secondary"), panel="secondary"),
     EffectDef("lut", "Apply LUT", "Color", "video", ["avfilter.lut3d"], [
         Param("file", "LUT File (.cube)", "file", "", mlt="av.file"),
         CH("interp", "Interpolation", [("tetrahedral", "Tetrahedral"), ("trilinear", "Trilinear"),

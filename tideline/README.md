@@ -32,8 +32,8 @@ manager and run `./install.sh` (into `~/.local`; `--uninstall` removes it).
 whose C library is at least as new as the build machine's:
 
 ```sh
-chmod +x Tideline-0.0.4-x86_64.AppImage
-./Tideline-0.0.4-x86_64.AppImage                 # or with a project file
+chmod +x Tideline-0.0.5-x86_64.AppImage
+./Tideline-0.0.5-x86_64.AppImage                 # or with a project file
 ```
 
 It carries Python, GTK 4, libadwaita, MLT, FFmpeg, frei0r and Qt; the graphics
@@ -84,8 +84,8 @@ positions and their keyframes move in proportion. Sequence Settings has the
 same aspect ratio and resolution pickers for one sequence.
 
 **Effects** — every clip has Motion (position, scale, rotation), Opacity with
-blend modes, Volume and Balance. 68 more effects (52 video, 16 audio: colour
-correction, curves, LUTs, blurs, keying, crop, distortion, stylise, EQ,
+blend modes, Volume and Balance. 71 more effects (55 video, 16 audio: colour
+correction, curves, colour wheels, LUTs, blurs, keying, crop, distortion, stylise, EQ,
 dynamics, pitch…) come from the Effects panel, each editable in Effect Controls.
 
 **RGB Curves** — **Effects ▸ Color ▸ RGB Curves** draws master, red, green and
@@ -95,6 +95,36 @@ show faintly behind), double-click or right-click to remove it, or select a
 point and nudge it with the arrow keys (Shift for bigger steps). The curve is
 a monotone cubic through the points, the same one FFmpeg's `curves` filter
 draws, so what the editor shows is what renders; each drag is one undo step.
+
+**Colour wheels** — **Effects ▸ Color ▸ Colour Wheels** puts Lift, Gamma, Gain
+and Offset wheels in Effect Controls, each with a master for its brightness,
+followed by Contrast (about a Pivot) and Saturation. Drag on a wheel to push
+the picture towards a colour (Shift for fine control), double-click to centre
+it. The wheels face the same way as the vectorscope, so pushing a wheel towards
+red moves the picture towards red on the scope, and a push never changes
+brightness: that is the master's job.
+
+**Hue / Saturation curves** — **Effects ▸ Color ▸ Hue / Saturation Curves**
+has five curves over a strip of what they act on, with the picture's own spread
+of hues (or brightness, or saturation) drawn faintly behind: **Hue vs Hue**
+(turn one colour into another), **Hue vs Sat**, **Hue vs Luma**, **Luma vs Sat**
+and **Sat vs Sat**. The flat line in the middle changes nothing; click it to add
+a point (on a flat hue curve two neighbours come with it, so only that colour
+moves) and drag it up or down. The hue curves wrap around from red back to red.
+Hue and saturation change the colour, never the brightness, and greys are left
+alone.
+
+**Secondary correction** — **Effects ▸ Color ▸ Secondary Correction** changes
+only the colours its qualifier picks: a hue range, a saturation range and a
+brightness range, each with soft edges and each switchable, or the inverse of
+the selection. **Pick Colour** and a click in the Program monitor centres the
+qualifier on the colour under the pointer (sampled with the correction
+itself switched off). Bars above the settings show what is selected; **Show
+Mask** turns the picture into the selection's matte and **Highlight** greys out
+everything else. Inside the selection: Hue Shift, Saturation, Lightness and a
+Tint wheel. Colour wheels, hue curves and the secondary are each worked out as
+a 3D LUT (cached in `~/.cache/tideline/luts`) that FFmpeg applies, so the preview
+and the export match exactly.
 
 **Scopes** — the **Scopes** panel (Shift+8, beside Project and Effects) measures
 the Program monitor, or the Source monitor, as it plays: a **waveform** (luma,
@@ -110,7 +140,9 @@ numbers and positions, colours, switches, choices (blend mode, alignment,
 wave…), and a title's text, font, size and style. Numbers, positions and
 colours blend along a curve; switches, choices and text step at their
 keyframes. The exceptions are Motion's Uniform Scale, which only links the two
-scale rows, and RGB Curves, whose curves are edited as a whole.
+scale rows; a title's animations, which are movement in themselves; and RGB
+Curves, Colour Wheels, Hue / Saturation Curves and Secondary Correction, which
+are edited as a whole.
 
 **Animate** — seven effects that move the picture without keyframes: Shake
 (seeded camera shake with position, rotation and zoom, optionally scaled to
@@ -150,16 +182,55 @@ motion. The picture at the clip's first frame stays put when remapping is
 switched on, and keyframes stay with the picture when the clip is trimmed.
 
 **Captions** — **Sequence ▸ Captions ▸ Auto Captions** (Ctrl+Alt+C)
-transcribes the sequence's sound, or its In to Out range, on your computer and
-places the result on a **Captions** track: one title per caption, white on a
-dark box near the bottom, so they play, render and export like any title.
-Select one to fix its words or change the style in Effect Controls. Choose the
-model (tiny to large), language (or automatic), characters per line and lines
-per caption. **File ▸ Import Captions / Export Captions** read and write SRT
+transcribes, on your computer, **all** of the sequence, its In to Out range, or
+only the **selected clip(s)**: then it listens to just those clips and the sound
+linked to them, and places captions over them alone, so one clip can have
+captions and the rest none. The result lands on a **Captions** track (one that
+is free there, or a new one): one title per caption, so they play, render and
+export like any title. Select one to fix its words in Effect Controls. Choose
+the model (tiny to large), language (or automatic), characters per line and
+lines per caption.
+
+**Caption style** — **Sequence ▸ Captions ▸ Caption Style** (or right-click a
+caption) sets the font, size, bold, italic and underline, text colour, outline
+colour and width, the box behind the text and its padding, a drop shadow, the
+position (bottom, middle or top, left, centre or right, and the distance from
+the edge) and the **animation**: in and out each None, Fade, Pop, Zoom, Slide
+Up/Down/Left/Right or Drop, plus Typewriter and Word by Word to type a caption
+in, with how long it takes. Presets (Classic, Outline, Yellow, Bold Pop,
+Minimal, Typewriter) set several at once and a preview shows the result. Apply
+it to the **selected captions** or **all captions** in the sequence; all of
+them also become the style new captions get. The animations work on any
+title: they are the Animate In / Animate Out rows of its Text effect. Typed
+text keeps its place as it appears, so centred lines do not shift. **File ▸ Import Captions / Export Captions** read and write SRT
 and WebVTT. Speech recognition uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
 (`sudo pacman -S whisper-cpp`; its model is downloaded once into
 `~/.local/share/tideline/whisper`) or OpenAI Whisper (`python-openai-whisper`);
 apart from that download nothing leaves your machine.
+
+**Multi-camera** — select the clips of several cameras in the Project panel and
+choose **Clip ▸ Multi-Camera ▸ Create Multi-Camera Sequence** (also in the
+Project panel's right-click menu). Tideline lines them up by their **sound**
+(it listens for the claps, words and hits every camera heard; a recorder
+without a picture syncs too), by their **In points** or by their **first
+frames**, makes a multi-camera sequence with one track per camera, and opens a
+sequence holding it, ready to cut. The **Multi-Camera** panel (Shift+9) shows
+every camera at the playhead. Play, and press **1–9** (or the keypad, or click
+a camera) to cut to it: the switches are made when playback stops, as one undo
+step. When stopped, a number cuts at the playhead, or changes the camera of the
+whole clip if it is selected; right-click ▸ Camera changes the selected clips.
+Cuts are ordinary edits: trim, roll and ripple them like any other. The sound
+comes from one camera's recording (the external recorder by default), follows
+the camera, or mixes them all — the panel's Sound menu.
+
+**Dockable panels** — every panel can go anywhere. Drag a panel's tab onto
+another group's tabs to join it, onto a group's edge to split it (a highlight
+shows where it will land), or out of the window to float it in a window of its
+own — on a second display, say; closing that window docks its panels back.
+Right-click a tab to float or close it; a closed panel comes back from the
+**Window** menu. Each workspace (Editing, Effects, Colour, Audio) keeps its own
+arrangement and split sizes between sessions, and **Window ▸ Reset Workspace
+Layout** puts it back as it started.
 
 **Pop-out preview** — **Window ▸ Pop-out Preview** (Ctrl+Shift+F11, or the
 button under the Program monitor) opens the Program or Source picture in a
@@ -247,7 +318,6 @@ back to a window, and `TIDELINE_WINDOWED=1` starts it windowed.
 
 Being upfront about the gaps compared with a commercial editor:
 
-- no multicam;
 - hardware encoding was tested with VA-API on AMD cards; the NVENC and Quick
   Sync presets use FFmpeg's standard options but have not been run on that
   hardware;
@@ -255,8 +325,11 @@ Being upfront about the gaps compared with a commercial editor:
 - extensions load at start-up, so installing or changing one needs a restart;
 - captions are burned in as titles; there is no closed-caption stream in exports
   (export an SRT or WebVTT file alongside instead);
-- RGB Curves are not keyframable, and there are no hue/saturation curves, colour wheels on the scopes or
-  secondary (qualifier) correction;
+- RGB Curves, Colour Wheels, Hue / Saturation Curves and Secondary Correction
+  are not keyframable, and the secondary has no shape masks or tracking;
+- multi-camera clips play at normal speed (no speed change on the clip), and
+  the camera grid is drawn small, so with many HD cameras it updates a few
+  times a second rather than at the full frame rate;
 - scopes measure the monitor's picture, so at a reduced playback resolution
   they see the reduced picture;
 - titles are single text blocks edited in Effect Controls, not on the canvas;
@@ -272,7 +345,8 @@ Being upfront about the gaps compared with a commercial editor:
   contains it;
 - no interchange import/export (EDL, FCP XML, OTIO) and no reading of other
   editors' project files;
-- panels switch between four fixed workspaces; they cannot be re-docked freely;
+- a floating panel window opens where the window manager puts it; its place
+  on screen is not remembered, only its size;
 - the AppImage is built from the build machine's libraries, so it needs a C
   library at least that new; it is not signed and does not update itself.
 
@@ -352,16 +426,21 @@ and relative path) and are not part of the undo history.
 ## Tests
 
 ```sh
-python -m unittest tests.test_core tests.test_engine tests.test_captions \
-    tests.test_extensions tests.test_proxies tests.test_color tests.test_keymap   # 170 tests, no display needed
-TIDELINE_DEBUG_SCRIPT=tests/ui_smoke.py python -m tideline   # 163 end-to-end UI checks
+python -m unittest tests.test_core tests.test_engine tests.test_captions tests.test_extensions \
+    tests.test_proxies tests.test_color tests.test_keymap tests.test_dock tests.test_multicam   # 195 tests, no display needed
+TIDELINE_DEBUG_SCRIPT=tests/ui_smoke.py python -m tideline   # 207 end-to-end UI checks
 ```
 
-`test_color` checks the curves against FFmpeg's own `curves` filter and the
-scopes against frames of known colours. `test_keymap` covers reassigning,
+`test_color` checks the curves against FFmpeg's own `curves` filter, the
+scopes against frames of known colours, and the colour wheels, hue curves and
+secondary maths and their LUT files (through FFmpeg's `lut3d`).
+`test_multicam` syncs generated "cameras" by their sound and renders the
+camera each clip shows; `test_dock` covers docking, floating and loading saved
+layouts. `test_keymap` covers reassigning,
 conflicts and `.tlkeys` files; `test_engine` also renders RGB Curves and
 encodes with every hardware format that works on the machine running it.
-`test_captions` runs the caption pipeline with a stand-in recogniser.
+`test_captions` runs the caption pipeline with a stand-in recogniser and
+checks caption styles and title animations.
 `test_extensions` loads manifests, Python extensions and every example in
 docs/EXTENSIONS.md, and renders extension effects and wipes. `test_proxies`
 makes real proxies with FFmpeg and checks that the preview plays them while
@@ -383,9 +462,12 @@ tideline/
   fonts.py        the private font folder and its registration with Pango, Qt and melt
   procedural.py   seeded noise and waves behind the Animate effects
   timeremap.py    speed curves: clip frame -> source frame, MLT time maps
-  captions.py     speech-to-text jobs, caption layout, SRT / WebVTT
+  captions.py     speech-to-text jobs, caption layout and style, SRT / WebVTT
   proxies.py      proxy files: FFmpeg jobs, the job queue, lookup and staleness
   curves.py       RGB Curves: control points, the PCHIP curve, FFmpeg's curve syntax
+  grading.py      colour wheels, hue/saturation curves, secondary: maths and 3D LUTs
+  multicam.py     multi-camera sequences: syncing cameras by sound, In points or start
+  dock.py         panel layouts as data: docking, splitting, floating
   scopes.py       waveform, parade, vectorscope and histogram maths (numpy)
   keymap.py       keyboard shortcuts: defaults, the user's changes, .tlkeys files
   appimage.py     hands programs started from the AppImage the system's environment

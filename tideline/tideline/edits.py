@@ -192,6 +192,10 @@ class Editor:
         if want_a:
             a = Clip(media_id=media.id, duration=dur, in_point=in_point, name=media.name,
                      link_id=link, effects=default_effects("audio", media))
+        if self.project.multicam_of(media) is not None:
+            for c in (v, a):
+                if c is not None:
+                    c.angle = 0
         return v, a
 
     def place(self, media, t, v_track=None, a_track=None, src_in=None, src_out=None,

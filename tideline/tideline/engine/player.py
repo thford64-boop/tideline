@@ -47,6 +47,7 @@ class Player:
         self._lock = threading.Lock()
         self._pending = None
         self._scheduled = False
+        self._settle = False     # render the first frame of a new producer twice (see set_producer)
         self._listener = mltlib.LISTENER(self._frame_show)
         self._event = None
 
@@ -86,6 +87,10 @@ class Player:
         producer.seek(self.position)
         self._consumer.connect(producer)
         self.speed = 0.0
+        # In a fresh graph the first picture through Qt filters (titles, crop,
+        # shadows) and RGB-only FFmpeg filters (curves, LUTs) can fail and come
+        # out as MLT's test card; the next render of the same frame is right.
+        self._settle = not was_playing
         del old
         if Player._active is self or Player._active is None:
             self._start_consumer()
@@ -185,6 +190,8 @@ class Player:
 
     # -- transport -------------------------------------------------------
     def _set_speed(self, speed):
+        if speed != 0.0:
+            self._settle = False
         changed = (speed != 0.0) != (self.speed != 0.0)
         self.speed = speed
         if self._producer is not None:
@@ -287,6 +294,11 @@ class Player:
         if item is None or self._producer is None:
             return False
         pixels, w, h, pos, left, right = item
+        if self._settle:
+            self._settle = False
+            if self.speed == 0.0:
+                self.refresh()
+                return False
         if self.speed != 0.0:
             self.position = pos
         if self.on_frame:

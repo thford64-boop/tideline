@@ -9,11 +9,15 @@ from .. import keyframes as kf
 from .. import timecode as tc
 from ..engine.effects import EFFECTS, TRANSITIONS
 from .curve_editor import CurveEditor
+from .grading_widgets import ColourWheel, HueCurveEditor, QualifierView
 from .graph import KeyframeGraph, MotionPreview
 from .widgets import (DragNumber, icon_button, label, open_files, parse_rgba, popup_menu, rgba_to_hex,
                       set_button_icon, spacer)
 
 ALIGNMENTS = [("center", "Centre at Cut"), ("start", "Start at Cut"), ("end", "End at Cut")]
+# Headings shown above a parameter, to break long effects into parts.
+HEADINGS = {("text", "anim_in"): "Animation", ("secondary", "use_hue"): "Qualifier",
+            ("secondary", "hue_shift"): "Correction", ("wheels", "contrast"): "Contrast & Saturation"}
 
 
 def interp_menu():
@@ -40,10 +44,18 @@ class ParamRow:
         self.clip, self.effect, self.pdef = clip, effect, pdef
         self.updating = False
         self.container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.graph = None
+        self.kf_button = None
+        if pdef.type == "wheel":
+            # A wheel is a tile of its own; Effect Controls lays the tiles out in a row.
+            self.watch, self.numbers, self.scale = None, [], None
+            self.editor = ColourWheel(pdef.label, lambda value, final: self._set(value, final))
+            self.container.append(self.editor)
+            self.refresh()
+            return
         self.widget = Gtk.Box(spacing=6)
         self.widget.add_css_class("fx-row")
         self.container.append(self.widget)
-        self.graph = None
         animated = effect.animated(pdef.name)
         if pdef.key:
             self.watch = icon_button("stopwatch", "Toggle animation", None, toggle=True, size=14,
@@ -59,7 +71,6 @@ class ParamRow:
         self.widget.append(name)
         self.numbers, self.scale, self.editor = [], None, None
         self._build_editor()
-        self.kf_button = None
         if pdef.key and animated:
             nav = Gtk.Box(spacing=0)
             nav.append(icon_button("left", "Previous keyframe", lambda b: self.app.goto_keyframe(
@@ -142,9 +153,10 @@ class ParamRow:
             self.editor.connect("clicked", self._choose_file)
             box.append(self.editor)
             box.append(spacer())
-        elif p.type == "curves":
+        elif p.type in ("curves", "huecurves"):
             box.append(spacer())
-            self.editor = CurveEditor(self.app, lambda value, final: self._set(value, final))
+            editor = CurveEditor if p.type == "curves" else HueCurveEditor
+            self.editor = editor(self.app, lambda value, final: self._set(value, final))
             self.editor.set_margin_start(30)
             self.editor.set_margin_end(8)
             self.editor.set_margin_bottom(6)
@@ -229,7 +241,7 @@ class ParamRow:
                     self.editor.set_font_desc(Pango.FontDescription(f"{v} 12"))
             elif p.type == "file":
                 self.editor.set_label(os.path.basename(v) if v else "Choose…")
-            elif p.type == "curves":
+            elif p.type in ("curves", "huecurves", "wheel"):
                 self.editor.set_value(v)
             elif p.type == "text":
                 buf = self.editor.get_buffer()
@@ -282,7 +294,13 @@ class EffectControls(Gtk.Box):
             app.on(ev, self.sync)
         for ev in ("playhead", "effects"):
             app.on(ev, self.refresh_values)
+        app.on("picker", self._picker_changed)
         self.sync()
+
+    def _picker_changed(self):
+        for view in self.previews:
+            if isinstance(view, QualifierView):
+                view.refresh()
 
     def commit_later(self, label_):
         """Coalesce a burst of live changes (slider drag, typing) into one undo step."""
@@ -439,12 +457,30 @@ class EffectControls(Gtk.Box):
                                     css="kf-button"))
         section.append(head)
         if not effect.collapsed:
+            if edef.panel == "secondary":
+                view = QualifierView(app, clip, effect)
+                self.previews.append(view)
+                section.append(view)
             uniform = effect.params.get("uniform", True)
+            wheels = None
             for pdef in edef.params:
                 if effect.type == "motion" and pdef.name == "scale_w" and uniform:
                     continue
+                heading = HEADINGS.get((effect.type, pdef.name))
+                if heading:
+                    section.append(label(heading, css="faint", margin_start=30, margin_top=6, margin_bottom=1))
                 row = ParamRow(self, clip, effect, pdef)
                 self.rows.append(row)
+                if pdef.type == "wheel":
+                    if wheels is None:
+                        wheels = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
+                                             max_children_per_line=4, min_children_per_line=1,
+                                             column_spacing=6, row_spacing=6, margin_start=24, margin_end=8,
+                                             margin_top=4, margin_bottom=4)
+                        section.append(wheels)
+                    wheels.append(row.container)
+                    continue
+                wheels = None
                 section.append(row.container)
             if edef.preview is not None:
                 preview = MotionPreview(app, clip, effect, edef)

@@ -533,6 +533,11 @@ class TimelineView(Gtk.DrawingArea):
         name = clip.name or (media.name if media else "Missing media")
         if track.captions and clip.effect("text") is not None:
             name = " ".join(str(clip.effect("text").value("text", None, "")).split()) or name
+        inner = self.app.project.multicam_of(media)
+        if inner is not None and inner.video_tracks:
+            angle = min(clip.angle or 0, len(inner.video_tracks) - 1)
+            cam = inner.video_tracks[angle].name or f"Camera {angle + 1}"
+            name = f"[{angle + 1}] {cam}  ·  {name}"
         if abs(clip.speed - 1.0) > 1e-6 or clip.reverse:
             name += f"  [{'-' if clip.reverse else ''}{clip.speed * 100:.4g}%]"
         if any(e.type == "time_remap" and e.enabled for e in clip.effects):
@@ -1096,6 +1101,16 @@ class TimelineView(Gtk.DrawingArea):
             sec = Gio.Menu()
             sec.append_submenu("Label", labels)
             menu.append_section(None, sec)
+            inner = app.project.multicam_of(app.project.media.get(clip.media_id))
+            if inner is not None:
+                cams = Gio.Menu()
+                for i, track in enumerate(inner.video_tracks):
+                    cams.append(f"{i + 1}  {track.name or f'Camera {i + 1}'}", f"app.set_camera({i})")
+                sec = Gio.Menu()
+                sec.append_submenu("Camera", cams)
+                menu.append_section(None, sec)
+            if clip.effect("text") is not None:
+                section(("Caption Style…", "app.caption_style"))
             section(("Apply Default Transitions", "app.default_transitions"),
                     ("Reveal in Project", "app.reveal"), ("Match Frame", "app.match_frame"))
         elif zone == "transition":

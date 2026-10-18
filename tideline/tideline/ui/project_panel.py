@@ -34,9 +34,12 @@ def _duration_text(m, project):
     return tc.format_duration(m.duration) if m.duration else ""
 
 
-def _video_text(m):
+def _video_text(m, project=None):
     if m.is_bin or not m.has_video:
         return ""
+    inner = project.multicam_of(m) if project is not None else None
+    if inner is not None:
+        return f"Multi-camera, {len(inner.video_tracks)} cameras"
     size = f"{m.width}×{m.height}" if m.width else ""
     return " ".join(x for x in (size, m.video_codec) if x) or m.kind.capitalize()
 
@@ -170,7 +173,7 @@ class ProjectPanel(Gtk.Box):
             m = li.get_item().item
             pic, icon, chip, name = li.widgets
             name.set_text(m.name + ("  (offline)" if m.offline else ""))
-            icon.set_name_(MEDIA_ICONS.get(m.kind, "film"))
+            icon.set_name_("multicam" if self.app.project.multicam_of(m) else MEDIA_ICONS.get(m.kind, "film"))
             chip.color = LABELS[m.label % len(LABELS)][1] if not m.is_bin else "#8b94a2"
             chip.queue_draw()
             tex = self.app.media_cache.thumbnail(m, height=150 if big else 54) if m.path else None
@@ -243,7 +246,7 @@ class ProjectPanel(Gtk.Box):
         cols = [("Name", self._name_cell(), False, 230),
                 ("Frame Rate", self._text_cell(_fps_text), False, 78),
                 ("Duration", self._text_cell(lambda m: _duration_text(m, project())), False, 92),
-                ("Video", self._text_cell(_video_text), False, 128),
+                ("Video", self._text_cell(lambda m: _video_text(m, project())), False, 128),
                 ("Audio", self._text_cell(_audio_text), False, 112),
                 ("Proxy", self._proxy_cell(), False, 96)]
         for title, factory, expand, width in cols:
@@ -458,6 +461,8 @@ class ProjectPanel(Gtk.Box):
             a = Gio.Menu()
             a.append("Open", "proj.open")
             a.append("New Sequence From Clip", "proj.sequence")
+            if len([m for m in items if m.kind in ("video", "audio")]) >= 2:
+                a.append("Create Multi-Camera Sequence…", "app.create_multicam")
             menu.append_section(None, a)
             b = Gio.Menu()
             b.append("Rename…", "proj.rename")

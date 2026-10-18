@@ -13,6 +13,7 @@ import re
 import shutil
 
 from . import curves as curvesmod
+from . import grading
 from . import keyframes as kf
 from .engine.effects import EFFECTS
 from .model import Effect
@@ -87,6 +88,14 @@ def _value(pdef, v):
         if not isinstance(v, dict):
             raise ValueError(v)
         return curvesmod.clean_set(v)
+    if t == "huecurves":
+        if not isinstance(v, dict):
+            raise ValueError(v)
+        return grading.clean_hue_curves(v)
+    if t == "wheel":
+        if not isinstance(v, (list, tuple)) or len(v) != 3:
+            raise ValueError(v)
+        return grading.clean_wheel(v)
     if t == "color":
         if not kf.is_color(v):
             raise ValueError(v)

@@ -58,6 +58,8 @@ COMMANDS = [
     ("reveal", "Reveal in Project", "", "Clip"),
     ("remove_effects", "Remove Effects", "", "Clip"),
     ("save_preset", "Save Effects as Preset…", "", "Clip"),
+    ("create_multicam", "Create Multi-Camera Sequence…", "", "Clip"),
+    *[(f"camera_{n}", f"Switch to Camera {n}", str(n), "Clip") for n in range(1, 10)],
     ("nudge_left", "Nudge Left One Frame", "<Alt>Left", "Clip"),
     ("nudge_right", "Nudge Right One Frame", "<Alt>Right", "Clip"),
     ("nudge_left_5", "Nudge Left Five Frames", "<Alt><Shift>Left", "Clip"),
@@ -72,6 +74,7 @@ COMMANDS = [
     ("audio_transition", "Apply Audio Transition", "<Ctrl><Shift>d", "Sequence"),
     ("default_transitions", "Apply Default Transitions to Selection", "<Shift>d", "Sequence"),
     ("auto_captions", "Auto Captions…", "<Ctrl><Alt>c", "Sequence"),
+    ("caption_style", "Caption Style…", "", "Sequence"),
     ("lift", "Lift", "semicolon", "Sequence"),
     ("extract", "Extract", "apostrophe", "Sequence"),
     ("zoom_in", "Zoom In", "equal", "Sequence"),
@@ -144,7 +147,10 @@ COMMANDS = [
     ("panel_effects", "Effects", "<Shift>7", "Window"),
     ("panel_mixer", "Audio Mixer", "<Shift>6", "Window"),
     ("panel_scopes", "Scopes", "<Shift>8", "Window"),
+    ("panel_multicam", "Multi-Camera", "<Shift>9", "Window"),
     ("panel_history", "History", "", "Window"),
+    ("panel_info", "Info", "", "Window"),
+    ("reset_workspace", "Reset Workspace Layout", "", "Window"),
     ("toggle_safe_margins", "Safe Margins", "", "Window"),
     ("popout_monitor", "Pop-out Preview…", "<Ctrl><Shift>F11", "Window"),
     ("extensions", "Manage Extensions…", "", "Extensions"),
@@ -156,7 +162,7 @@ BY_NAME = {c[0]: c for c in COMMANDS}
 # Extra keys that trigger an existing command.
 ALIASES = [("BackSpace", "delete"), ("<Shift>BackSpace", "ripple_delete"), ("plus", "zoom_in"),
            ("KP_Add", "zoom_in"), ("KP_Subtract", "zoom_out"), ("<Shift>equal", "zoom_in"),
-           ("<Ctrl>y", "redo")]
+           ("<Ctrl>y", "redo")] + [(f"KP_{n}", f"camera_{n}") for n in range(1, 10)]
 
 TOOLS = [
     ("select", "Selection Tool", "V"),
@@ -184,10 +190,11 @@ MENUS = [
     ("Edit", ["undo", "redo", None, "cut", "copy", "paste", "paste_insert", "delete", "ripple_delete",
               "duplicate", None, "select_all", "deselect_all", None, "preferences", "shortcuts"]),
     ("Clip", ["rename", "toggle_enable", "link", None, "speed", "time_remap", "remove_effects", "save_preset", None, "match_frame",
-              "reveal", None, ("Nudge", ["nudge_left", "nudge_right", "nudge_left_5", "nudge_right_5"])]),
+              "reveal", None, ("Multi-Camera", ["create_multicam", None] + [f"camera_{n}" for n in range(1, 10)]),
+              ("Nudge", ["nudge_left", "nudge_right", "nudge_left_5", "nudge_right_5"])]),
     ("Sequence", ["sequence_settings", None, "add_edit", "add_edit_all", "ripple_trim_prev",
                   "ripple_trim_next", None, "video_transition", "audio_transition",
-                  "default_transitions", None, ("Captions", ["auto_captions", "import_captions", "export_captions"]),
+                  "default_transitions", None, ("Captions", ["auto_captions", "caption_style", None, "import_captions", "export_captions"]),
                   None, "lift", "extract", None, "zoom_in", "zoom_out", "zoom_fit",
                   None, "toggle_snap", "toggle_linked", None, "add_video_track", "add_audio_track",
                   "delete_empty_tracks", "taller_tracks", "shorter_tracks"]),
@@ -198,8 +205,9 @@ MENUS = [
                   "shuttle_fwd", None, "step_back", "step_fwd", "prev_edit", "next_edit", "goto_start",
                   "goto_end", None, "insert", "overwrite", "select_at_playhead"]),
     ("Window", [("Workspaces", ["workspace_editing", "workspace_effects", "workspace_color", "workspace_audio"]),
-                "toggle_fullscreen", "maximize_panel", None, "panel_project", "panel_source", "panel_timeline",
-                "panel_program", "panel_effect_controls", "panel_mixer", "panel_effects", "panel_scopes", "panel_history", None,
+                "reset_workspace", "toggle_fullscreen", "maximize_panel", None, "panel_project", "panel_source",
+                "panel_timeline", "panel_program", "panel_effect_controls", "panel_mixer", "panel_effects",
+                "panel_scopes", "panel_multicam", "panel_history", "panel_info", None,
                 "toggle_safe_margins", "popout_monitor"]),
     # Commands that extensions add are listed after these, one section per extension.
     ("Extensions", ["extensions", "extensions_folder"]),

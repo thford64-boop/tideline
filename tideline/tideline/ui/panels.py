@@ -192,6 +192,10 @@ class InfoPanel(Gtk.Box):
             lines += [f"<b>{esc(c.name or (m.name if m else '?'))}</b>  ({seq.track_label(track)})",
                       f"Start {f(c.start)}   End {f(c.end)}", f"Duration {f(c.duration)}   In {f(c.in_point)}",
                       f"Speed {c.speed * 100:.4g}%{' reversed' if c.reverse else ''}"]
+            inner = app.project.multicam_of(m)
+            if inner is not None and inner.video_tracks:
+                angle = min(c.angle or 0, len(inner.video_tracks) - 1)
+                lines.append(f"Camera {angle + 1}: {esc(inner.video_tracks[angle].name or '')}")
             if m is not None and m.path:
                 lines.append(f"<span alpha='65%'>{esc(m.path)}</span>")
         elif pairs:

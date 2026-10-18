@@ -548,6 +548,25 @@ def _puzzle(cr):
     cr.stroke()
 
 
+def _eyedropper(cr):
+    _line(cr, (4.5, 19.5), (5.5, 15.5), (13, 8), (16, 11), (8.5, 18.5), (4.5, 19.5))
+    cr.stroke()
+    _line(cr, (11.5, 6.5), (17.5, 12.5))
+    cr.stroke()
+    cr.arc(17.2, 6.8, 2.6, 0, 2 * math.pi)
+    cr.fill()
+
+
+def _multicam(cr):
+    # four small screens, one of them live
+    for i, (x, y) in enumerate(((3.5, 4.5), (12.5, 4.5), (3.5, 12.5), (12.5, 12.5))):
+        cr.rectangle(x, y, 8, 6.5)
+        if i == 0:
+            cr.fill()
+        else:
+            cr.stroke()
+
+
 ICONS = {
     "select": _select, "track_fwd": _track_fwd, "ripple": _ripple, "roll": _roll, "rate": _rate,
     "razor": _razor, "slip": _slip, "slide": _slide, "pen": _pen, "hand": _hand, "zoom": _zoom,
@@ -563,6 +582,7 @@ ICONS = {
     "swatch": _swatch, "fx": _fx, "search": _search, "lock": _lock, "unlock": _unlock,
     "eye": _eye, "eye_off": _eye_off, "curve": _curve, "fullscreen": _fullscreen, "restore": _restore,
     "popout": _popout, "captions": _captions, "proxy": _proxy, "puzzle": _puzzle,
+    "eyedropper": _eyedropper, "multicam": _multicam,
 }
 
 MEDIA_ICONS = {"video": "film", "audio": "wave", "image": "image", "sequence": "sequence",

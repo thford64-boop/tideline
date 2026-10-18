@@ -7,6 +7,7 @@ import threading
 from collections import defaultdict
 
 import gi
+import numpy as np
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
@@ -16,8 +17,10 @@ from . import APP_ID, APP_NAME, PROJECT_EXT, VERSION  # noqa: E402
 from . import captions as captionsmod  # noqa: E402
 from . import extensions  # noqa: E402
 from . import fonts  # noqa: E402
+from . import grading  # noqa: E402
 from . import keyframes as kf  # noqa: E402
 from . import keymap as keymapmod  # noqa: E402
+from . import multicam  # noqa: E402
 from . import presets  # noqa: E402
 from . import proxies  # noqa: E402
 from . import settings as settingsmod  # noqa: E402
@@ -60,6 +63,8 @@ class App(Adw.Application):
         self.focus = "timeline"
         self.drag_payload = None
         self.window = None
+        self.picker = None                # fn(x, y) waiting for a click in the Program monitor
+        self.camera_cuts = []             # (frame, angle, track id) switched to while playing
         self.export_job = None
         self._listeners = defaultdict(list)
         self.frames = {}                  # monitor -> (rgb bytes, width, height): what scopes analyse
@@ -72,6 +77,7 @@ class App(Adw.Application):
         if os.environ.get("TIDELINE_DEBUG_SCRIPT"):
             self.prefs.save = lambda: None        # test runs leave the user's settings alone
             self.prefs["shortcuts"] = {}
+            self.prefs["dock_layouts"] = {}
         self.keymap = keymapmod.Keymap(self.prefs["shortcuts"])
         self.launcher = None
         self.popout = None
@@ -129,6 +135,9 @@ class App(Adw.Application):
         label = Gio.SimpleAction.new("set_label", GLib.VariantType.new("i"))
         label.connect("activate", lambda a, p: self.set_label(p.get_int32()))
         self.add_action(label)
+        camera = Gio.SimpleAction.new("set_camera", GLib.VariantType.new("i"))
+        camera.connect("activate", lambda a, p: self.set_camera(p.get_int32()))
+        self.add_action(camera)
         del_track = Gio.SimpleAction.new("delete_track", GLib.VariantType.new("s"))
         del_track.connect("activate", lambda a, p: self.seq and self.seq.track(p.get_string())
                           and self.delete_track(self.seq.track(p.get_string())))
@@ -238,6 +247,8 @@ class App(Adw.Application):
         if fn is None:
             if name.startswith("tool_"):
                 return self.set_tool(name[5:])
+            if name.startswith("camera_"):
+                return self.switch_camera(int(name[7:]) - 1)
             if name.startswith(("workspace_", "panel_")) and self.window:
                 return self.window.command(name)
             return self.status(f"{BY_NAME.get(name, (name, name))[1]} is not available yet.", warn=True)
@@ -491,6 +502,9 @@ class App(Adw.Application):
 
     def _play_state(self, playing):
         self.emit("playstate")
+        if not playing and self.camera_cuts:
+            cuts, self.camera_cuts = self.camera_cuts, []
+            self._apply_camera_cuts(cuts)
         if not playing and self.seq is not None:
             # Panels skipped while playing catch up with where it stopped.
             self.emit("playhead")
@@ -1099,14 +1113,73 @@ class App(Adw.Application):
 
     # -- captions --------------------------------------------------------
     def caption_style(self, seq=None):
-        """Text effect parameters for a new caption: white on a dark box,
-        near the bottom, sized to the frame."""
+        """The style new captions get: the sequence's own, over the default."""
         seq = seq or self.seq
-        size = max(16, int(round(min(seq.width, seq.height) / 18)))
-        return {"font": "Sans", "size": size, "bold": True, "italic": False, "fill": "#ffffffff",
-                "stroke": "#000000ff", "stroke_width": 0, "background": "#000000b0",
-                "padding": max(4, size // 4), "halign": "center", "valign": "bottom",
-                "offset": [0.0, -float(round(seq.height * 0.06))]}
+        style = captionsmod.default_style(seq.width, seq.height)
+        style.update({k: v for k, v in (seq.caption_style or {}).items() if k in captionsmod.STYLE_KEYS})
+        return style
+
+    def caption_style_of(self, clip, seq=None):
+        """The style a caption (or any title) clip shows, as a style dict."""
+        seq = seq or self.seq
+        return captionsmod.style_of(clip.effect("text"), clip.effect("drop_shadow"), self.caption_style(seq),
+                                    seq.width, seq.height)
+
+    def _styled_effects(self, clip, style, seq):
+        """``clip``'s effects with its text restyled (its words kept) and a
+        drop shadow added or removed."""
+        params = captionsmod.text_params(style, seq.width, seq.height)
+        effects = []
+        for e in clip.effects:
+            if e.type == "text":
+                e = Effect("text", id=e.id, enabled=e.enabled, collapsed=e.collapsed,
+                           params=dict(e.params, **params),
+                           keyframes={k: v for k, v in e.keyframes.items() if k not in params})
+            elif e.type == "drop_shadow":
+                continue
+            effects.append(e)
+        if style.get("shadow"):
+            at = next((i + 1 for i, e in enumerate(effects) if e.type == "text"), 0)
+            effects.insert(at, Effect("drop_shadow", params=captionsmod.shadow_params(style)))
+        return effects
+
+    def caption_clips(self, scope="all", seq=None):
+        """(track, clip) of the captions a style applies to: every clip on the
+        caption tracks, or the selected clips that have text."""
+        seq = seq or self.seq
+        if seq is None:
+            return []
+        if scope == "selected":
+            return [(t, c) for t, c in self.selected_clips() if c.effect("text") is not None and not t.locked]
+        return [(t, c) for t in self.caption_tracks(seq) if not t.locked for c in t.clips if c.effect("text")]
+
+    def apply_caption_style(self, style, scope="all", make_default=True):
+        """Restyle captions (``scope`` "all" or "selected"); with
+        ``make_default`` new captions in this sequence look the same.
+        Returns the number of clips restyled."""
+        seq = self.seq
+        if seq is None:
+            return 0
+        style = {k: v for k, v in style.items() if k in captionsmod.STYLE_KEYS}
+        pairs = self.caption_clips(scope, seq)
+        for _, clip in pairs:
+            clip.effects = self._styled_effects(clip, style, seq)
+        if make_default:
+            seq.caption_style = dict(style)
+        if not pairs and not make_default:
+            self.status("Select caption clips first, or apply the style to all captions.", warn=True)
+            return 0
+        self.commit("Caption Style")
+        self.emit("selection")
+        n = len(pairs)
+        self.status(f"Restyled {n} caption{'s' if n != 1 else ''}" if n else "Saved the style for new captions")
+        return n
+
+    def cmd_caption_style(self):
+        if self.seq is None:
+            return self.status("Open a sequence first.", warn=True)
+        from .ui.caption_style import CaptionStyleDialog
+        CaptionStyleDialog(self).present()
 
     def caption_tracks(self, seq=None):
         seq = seq or self.seq
@@ -1115,26 +1188,30 @@ class App(Adw.Application):
     def add_captions(self, cues, start=0, end=None, replace=False, label="Add Captions"):
         """Place ``cues`` (seconds from frame ``start``) as caption clips. With
         ``replace`` they go on the existing caption track, clearing
-        ``start``..``end`` first; otherwise on a new caption track at the top.
-        Returns the number of captions placed."""
+        ``start``..``end`` first; otherwise on a caption track with nothing
+        in that range, or a new one at the top. Returns the number placed."""
         seq = self.seq
         if seq is None or not cues:
             return 0
         fps = seq.fps
         style = self.caption_style(seq)
+        params = captionsmod.text_params(style, seq.width, seq.height)
         item = next((m for m in self.project.media.values()
                      if m.kind == "title" and m.name == "Captions" and m.parent is None), None)
         if item is None:
             item = self.project.add_media(MediaItem(name="Captions", kind="title", has_video=True,
-                                                    label=LABEL_GENERATED, params=dict(style, text="Caption")))
+                                                    label=LABEL_GENERATED, params=dict(params, text="Caption")))
+        stop = end if end is not None else start + int(round(cues[-1].end * fps)) + 1
 
         def run(ed):
             existing = self.caption_tracks(seq)
+            free = [t for t in existing if not t.locked and not any(c.start < stop and c.end > start for c in t.clips)]
             if replace and existing:
                 track = existing[-1]
                 ed._free(track)
-                stop = end if end is not None else max(track.end(), start + int(round(cues[-1].end * fps)) + 1)
-                ed.clear_range(track, start, stop)
+                ed.clear_range(track, start, max(stop, track.end()) if end is None else stop)
+            elif free:
+                track = free[-1]
             else:
                 track = seq.add_track("video")
                 n = len(existing) + 1
@@ -1149,8 +1226,10 @@ class App(Adw.Application):
                 if b <= a:
                     continue
                 track.clips = [c for c in track.clips if c.end <= a or c.start >= b]
-                track.clips.append(Clip(media_id=item.id, start=a, duration=b - a, name="", effects=[
-                    Effect("text", params=dict(style, text=cue.text)), Effect("motion"), Effect("opacity")]))
+                clip = Clip(media_id=item.id, start=a, duration=b - a, name="", effects=[
+                    Effect("text", params=dict(params, text=cue.text)), Effect("motion"), Effect("opacity")])
+                clip.effects = self._styled_effects(clip, style, seq)
+                track.clips.append(clip)
                 prev_end = b
                 placed += 1
             if not placed:
@@ -1161,9 +1240,25 @@ class App(Adw.Application):
         placed = self.edit(label, run) or 0
         self.emit("media")
         if placed:
-            self.status(f"{placed} caption{'s' if placed != 1 else ''} added. Select one to edit its words "
-                        "and style in Effect Controls; File ▸ Export Captions writes SRT or WebVTT.")
+            self.status(f"{placed} caption{'s' if placed != 1 else ''} added. Sequence ▸ Captions ▸ Caption Style "
+                        "changes how they look; File ▸ Export Captions writes SRT or WebVTT.")
         return placed
+
+    def caption_source(self, clip_ids):
+        """A copy of the sequence holding only the given clips and the clips
+        linked to them, for captioning just their sound. Returns (sequence,
+        first frame, end frame)."""
+        seq = self.seq
+        ids = set(Editor(self.project, seq, linked=True).expand(list(clip_ids)))
+        copy_ = Sequence.from_dict(seq.to_dict())
+        copy_.id = seq.id + "-captions"
+        for track in copy_.tracks():
+            track.clips = [c for c in track.clips if c.id in ids]
+            track.transitions = [t for t in track.transitions if t.clip_a in ids or t.clip_b in ids]
+        clips = [c for _, c in copy_.all_clips()]
+        if not clips:
+            return copy_, 0, 0
+        return copy_, min(c.start for c in clips), max(c.end for c in clips)
 
     def caption_cues(self, seq=None):
         """The sequence's captions as cues (seconds from the sequence start)."""
@@ -1226,6 +1321,132 @@ class App(Adw.Application):
         save_file(self.window, "Export Captions", seq.name + ".srt", chosen,
                   [file_filter("SubRip (.srt)", ["*.srt"]), file_filter("WebVTT (.vtt)", ["*.vtt"])],
                   folder=folder)
+
+    # -- multi-camera ----------------------------------------------------
+    def cmd_create_multicam(self):
+        items = [m for m in (self.window.project_panel.selected_items() if self.window else [])
+                 if m.kind in ("video", "audio") and m.path]
+        if not [m for m in items if m.has_video]:
+            return self.status("Select the camera clips (two or more) in the Project panel first.", warn=True)
+        if len(items) < 2:
+            return self.status("A multi-camera sequence needs two or more clips: select them in the Project "
+                               "panel.", warn=True)
+        from .ui.multicam import MulticamDialog
+        MulticamDialog(self, items).present()
+
+    def create_multicam(self, items, starts, name, audio=None, edit_sequence=True):
+        """Make a multi-camera source sequence from ``items`` lined up at
+        ``starts`` (seconds), and, with ``edit_sequence``, a sequence that
+        holds it, ready for cutting between cameras."""
+        try:
+            mc = multicam.build(self.project, items, starts, self.project.unique_name(name), audio)
+        except multicam.SyncError as exc:
+            return self.status(str(exc), warn=True)
+        parent = self.window.project_panel.current_bin if self.window else None
+        item = self.project.add_sequence(mc, parent=parent)
+        label = "Create Multi-Camera Sequence"
+        if edit_sequence:
+            seq = Sequence.create(self.project.unique_name(f"{mc.name} Edit"), mc.width, mc.height, mc.fps_num,
+                                  mc.fps_den, mc.sample_rate)
+            self.project.add_sequence(seq, parent=parent)
+            Editor(self.project, seq).place(item, 0)
+            self.project.active_sequence_id = seq.id
+            self.selection, self.selected_transition, self.selected_gap = [], None, None
+            seq.playhead = 0
+        self.history.push(label, self.project.to_dict())
+        self.project.dirty = True
+        self.queue_rebuild()
+        for ev in ("media", "sequence", "selection", "playhead", "history"):
+            self.emit(ev)
+        if edit_sequence:
+            self.emit("view_fit")
+        if self.window:
+            self.window.show_panel("multicam")
+        self.status(f"{mc.name}: {len(mc.video_tracks)} cameras. Play the sequence and press 1–"
+                    f"{min(9, len(mc.video_tracks))} (or click a camera) to cut between them.")
+        return mc
+
+    def multicam_target(self, seq=None):
+        """(track, clip, multi-camera sequence) under the playhead: a selected
+        multi-camera clip there, else the topmost visible one."""
+        seq = seq or self.seq
+        if seq is None:
+            return None
+        found = []
+        for track in reversed(seq.video_tracks):
+            clip = track.clip_at(seq.playhead)
+            inner = self.project.multicam_of(self.project.media.get(clip.media_id)) if clip else None
+            if inner is not None and not track.hidden:
+                found.append((track, clip, inner))
+        selected = [f for f in found if f[1].id in self.selection]
+        return (selected or found or [None])[0]
+
+    def switch_camera(self, angle):
+        """Cut to camera ``angle`` (0-based) at the playhead. While playing the
+        switches are noted and made when playback stops; when stopped, a
+        selected multi-camera clip changes camera as a whole, otherwise it is
+        cut at the playhead and the rest of it changes camera."""
+        seq = self.seq
+        target = self.multicam_target()
+        if target is None:
+            return self.status("No multi-camera clip under the playhead. Select camera clips in the Project panel "
+                               "and use Clip ▸ Multi-Camera ▸ Create Multi-Camera Sequence.", warn=True)
+        track, clip, inner = target
+        if not 0 <= angle < len(inner.video_tracks):
+            return self.status(f"{inner.name} has {len(inner.video_tracks)} cameras.", warn=True)
+        if self.program.playing:
+            self.camera_cuts.append((seq.playhead, angle, track.id))
+            self.emit("multicam")
+            return
+        whole = clip.id in self.selection
+        self._apply_camera_cuts([(clip.start if whole else seq.playhead, angle, track.id)])
+
+    def _apply_camera_cuts(self, cuts):
+        seq = self.seq
+        names = []
+
+        def run(_ed):
+            ed = Editor(self.project, seq, linked=True)
+            done = 0
+            for t, angle, track_id in sorted(cuts):
+                track = seq.track(track_id)
+                clip = track.clip_at(t) if track is not None else None
+                inner = self.project.multicam_of(self.project.media.get(clip.media_id)) if clip else None
+                if inner is None or track.locked:
+                    continue
+                if t > clip.start:
+                    ed.split(t, [clip.id])
+                    clip = track.clip_at(t)
+                for c in [clip] + [p for _, p in ed.partners(clip)]:
+                    c.angle = angle
+                names.append(multicam.angle_names(inner)[angle] if angle < len(inner.video_tracks) else str(angle))
+                done += 1
+            return done
+
+        if self.edit("Switch Camera" if len(cuts) == 1 else f"Switch Camera ×{len(cuts)}", run):
+            self.status(f"Switched to {names[-1]}" if len(names) == 1 else f"Made {len(names)} camera switches")
+        self.emit("multicam")
+
+    def set_camera(self, angle, clip_ids=None):
+        """Give the selected multi-camera clips (and their sound) camera ``angle``."""
+        seq = self.seq
+        ed = Editor(self.project, seq, linked=True)
+        pairs = ed.items(ed.expand(clip_ids if clip_ids is not None else self.selection))
+        pairs = [(t, c) for t, c in pairs if self.project.multicam_of(self.project.media.get(c.media_id))
+                 and not t.locked]
+        if not pairs:
+            return self.status("Select multi-camera clips to change their camera.", warn=True)
+        for _, c in pairs:
+            c.angle = angle
+        self.commit("Change Camera")
+        self.emit("multicam")
+
+    def set_multicam_audio(self, inner, mode):
+        if inner.multicam_audio != mode:
+            inner.multicam_audio = mode
+            inner._rev = getattr(inner, "_rev", 0) + 1
+            self.commit("Multi-Camera Audio")
+            self.emit("multicam")
 
     # -- pop-out preview -------------------------------------------------
     def cmd_popout_monitor(self):
@@ -1541,6 +1762,65 @@ class App(Adw.Application):
     def toggle_effect(self, effect, enabled):
         effect.enabled = enabled
         self.effect_changed(effect, True, "Toggle Effect")
+
+    # -- colour picking --------------------------------------------------
+    def start_pick(self, callback, hint):
+        """The next click in the Program monitor goes to ``callback(x, y)``
+        (sequence pixels) instead of selecting or moving clips."""
+        self.picker = callback
+        self.emit("picker")
+        self.status(hint)
+
+    def cancel_pick(self):
+        if self.picker is not None:
+            self.picker = None
+            self.emit("picker")
+
+    def picked(self, x, y):
+        """A click in the Program monitor while picking."""
+        fn, self.picker = self.picker, None
+        self.emit("picker")
+        if fn is not None:
+            fn(x, y)
+
+    def sample_colour(self, x, y, without=None, radius=3):
+        """Average RGB (0..1) around sequence pixel (x, y) of the frame under
+        the playhead, rendered with the effect ``without`` bypassed."""
+        seq = self.seq
+        was = without.enabled if without is not None else None
+        if without is not None:
+            without.enabled = False
+        try:
+            graph = Builder(self.project, proxies=self.prefs["use_proxies"]).build(seq)
+        finally:
+            if without is not None:
+                without.enabled = was
+        w = min(seq.width, 960)
+        h = max(2, int(round(seq.height * w / seq.width / 2)) * 2)
+        graph.tractor.seek(max(0, min(seq.playhead, graph.length - 1)))
+        frame = graph.tractor.get_frame()
+        data = mltlib.mlt.frame_get_image(frame, mltlib.IMAGE_RGB, w, h)
+        img = np.frombuffer(data, np.uint8).reshape(h, w, 3)
+        px, py = int(x * w / seq.width), int(y * h / seq.height)
+        patch = img[max(0, py - radius):py + radius + 1, max(0, px - radius):px + radius + 1]
+        return tuple(float(c) / 255.0 for c in patch.reshape(-1, 3).mean(axis=0)) if patch.size else (0.0, 0.0, 0.0)
+
+    def pick_qualifier(self, clip, effect):
+        """Let a click in the Program monitor set a secondary correction's
+        qualifier to the colour under the pointer."""
+        def chosen(x, y):
+            seq = self.seq
+            if seq is None or not (0 <= x < seq.width and 0 <= y < seq.height):
+                return self.status("Click inside the picture to pick a colour.", warn=True)
+            rgb = self.sample_colour(x, y, without=effect)
+            effect.params = dict(effect.params, **grading.sample_qualifier(rgb))
+            self.effect_changed(effect, True, "Pick Qualifier Colour")
+            self.emit("selection")
+            r, g, b = (round(c * 255) for c in rgb)
+            self.status(f"Selected colours like RGB {r} {g} {b}. Set Show to Mask to see the selection.")
+
+        chosen.effect = effect
+        self.start_pick(chosen, "Click a colour in the Program monitor (Esc cancels).")
 
     # -- presets ---------------------------------------------------------
     def apply_preset(self, path, clip_ids=None):
@@ -1962,6 +2242,10 @@ class App(Adw.Application):
     def cmd_maximize_panel(self):
         if self.window:
             self.window.toggle_maximize()
+
+    def cmd_reset_workspace(self):
+        if self.window:
+            self.window.reset_workspace()
 
     def cmd_toggle_fullscreen(self):
         if self.window:

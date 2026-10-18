@@ -31,7 +31,7 @@ DEFAULTS = dict(QUALITY_PRESETS["balanced"], quality="balanced", setup_done=Fals
                 caption_lines=2, use_proxies=True, proxy_size=540, proxy_codec="mjpeg",
                 proxy_location="project", proxy_auto=0, disabled_extensions=[],
                 scope_mode="waveform", scope_waveform="luma", scope_feed="program", scope_gain=1.0,
-                shortcuts={})
+                shortcuts={}, dock_layouts={})
 
 
 def config_dir():

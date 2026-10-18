@@ -216,6 +216,61 @@ def layout(cues, max_chars=42, max_lines=2):
     return merged
 
 
+# -- style ---------------------------------------------------------------------
+STYLE_KEYS = ("font", "size", "bold", "italic", "underline", "fill", "stroke", "stroke_width", "background",
+              "padding", "halign", "position", "margin", "shadow", "shadow_color", "anim_in", "anim_out", "anim_time")
+_TEXT_KEYS = ("font", "size", "bold", "italic", "underline", "fill", "stroke", "stroke_width", "background",
+              "padding", "anim_in", "anim_out", "anim_time")
+
+
+def default_style(width, height):
+    """White bold text on a dark box near the bottom, sized to the frame."""
+    size = max(16, int(round(min(width, height) / 18)))
+    return {"font": "Sans", "size": size, "bold": True, "italic": False, "underline": False,
+            "fill": "#ffffffff", "stroke": "#000000ff", "stroke_width": 0, "background": "#000000b0",
+            "padding": max(4, size // 4), "halign": "center", "position": "bottom", "margin": 6.0,
+            "shadow": False, "shadow_color": "#000000b4", "anim_in": "none", "anim_out": "none", "anim_time": 0.3}
+
+
+def text_params(style, width, height):
+    """Text effect parameters that draw a caption in ``style``: position and
+    margin become an alignment and an offset in a ``width`` × ``height`` frame."""
+    margin = float(style.get("margin", 6.0)) / 100.0
+    position, halign = style.get("position", "bottom"), style.get("halign", "center")
+    dy = {"bottom": -1.0, "top": 1.0}.get(position, 0.0) * round(height * margin)
+    dx = {"left": 1.0, "right": -1.0}.get(halign, 0.0) * round(width * margin)
+    params = {k: style[k] for k in _TEXT_KEYS if k in style}
+    params.update(halign=halign, valign=position if position in ("top", "middle") else "bottom",
+                  offset=[float(dx), float(dy)])
+    return params
+
+
+def style_of(text, shadow, base, width, height):
+    """The style a title shows, as a style dict: ``text`` is its Text effect,
+    ``shadow`` its Drop Shadow (or None), ``base`` fills in the rest."""
+    style = dict(base)
+    if text is None:
+        return style
+    for k in _TEXT_KEYS + ("halign",):
+        style[k] = text.value(k, None, style.get(k))
+    valign = text.value("valign", None, "bottom")
+    style["position"] = valign if valign in ("top", "middle") else "bottom"
+    off = text.value("offset", None, [0.0, 0.0]) or [0.0, 0.0]
+    if style["position"] != "middle":
+        style["margin"] = round(abs(float(off[1])) / height * 100.0, 1)
+    style["shadow"] = shadow is not None and shadow.enabled
+    if shadow is not None:
+        style["shadow_color"] = shadow.value("color", None, style.get("shadow_color"))
+    return style
+
+
+def shadow_params(style):
+    """Drop Shadow parameters in proportion to the caption's size."""
+    size = float(style.get("size", 48))
+    return {"color": style.get("shadow_color", "#000000b4"), "radius": round(max(2.0, size / 10), 1),
+            "x": round(max(1.0, size / 16), 1), "y": round(max(1.0, size / 16), 1)}
+
+
 # -- recognisers ---------------------------------------------------------------
 def models_dir():
     base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")

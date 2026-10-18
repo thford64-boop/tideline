@@ -1,4 +1,5 @@
-"""Auto Captions: transcribe the sequence's speech into caption clips."""
+"""Auto Captions: transcribe speech into caption clips, for the whole
+sequence, its In to Out range, or only the selected clips."""
 
 import os
 import shutil
@@ -28,11 +29,13 @@ class CaptionsDialog(_Dialog):
         self.language.set_selected(next((i for i, lang in enumerate(cap.LANGUAGES)
                                          if lang[0] == prefs["caption_language"]), 0))
         seq = self.seq
-        has_range = seq.in_point is not None or seq.out_point is not None
-        self.range = self.add_row("Range", Gtk.DropDown.new_from_strings(["Entire sequence",
-                                                                          "Sequence In to Out"]))
-        self.range.set_selected(1 if has_range else 0)
-        self.range.set_sensitive(has_range)
+        self.clip_ids = [c.id for _, c in app.selected_clips()]
+        self.has_range = seq.in_point is not None or seq.out_point is not None
+        self.range = self.add_row("Captions for", Gtk.DropDown.new_from_strings(
+            ["All — the entire sequence", "Selected clip(s) only", "Sequence In to Out"]))
+        self.range.set_selected(1 if self.clip_ids else 2 if self.has_range else 0)
+        self.range.set_tooltip_text("Selected clip(s) only listens to just those clips (and the sound linked to "
+                                    "them), and places captions over them alone.")
         layout = Gtk.Box(spacing=6)
         self.chars = _spin(prefs["caption_chars"], 16, 80)
         self.chars.set_width_chars(4)
@@ -44,6 +47,8 @@ class CaptionsDialog(_Dialog):
         layout.append(label("lines", css="dim"))
         self.add_row("Caption size", layout)
         self.replace = Gtk.CheckButton(label="Replace the captions already in this range")
+        self.replace.set_tooltip_text("Otherwise the new captions go on a caption track that is free there, "
+                                      "or a new one")
         self.replace.set_visible(bool(app.caption_tracks(seq)))
         self.grid.attach(self.replace, 1, self._row, 1, 1)
         self._row += 1
@@ -77,11 +82,31 @@ class CaptionsDialog(_Dialog):
         i = self.engine_menu.get_selected()
         return self.engines[i] if 0 <= i < len(self.engines) else None
 
+    def _mode(self):
+        return ("all", "clips", "in_out")[self.range.get_selected()]
+
     def _range(self):
         seq = self.seq
-        if self.range.get_selected() == 1:
+        mode = self._mode()
+        if mode == "clips":
+            _, a, b = self.app.caption_source(self.clip_ids)
+            return a, b
+        if mode == "in_out":
             return seq.in_point or 0, seq.out_point if seq.out_point is not None else seq.end()
         return 0, seq.end()
+
+    def _range_problem(self):
+        """Why the chosen range cannot be captioned, or ""."""
+        mode = self._mode()
+        if mode == "clips" and not self.clip_ids:
+            return "Select the clip(s) to caption in the timeline first."
+        if mode == "clips":
+            source, a, b = self.app.caption_source(self.clip_ids)
+            if not any(t.clips for t in source.audio_tracks):
+                return "The selected clips have no sound to caption."
+        if mode == "in_out" and not self.has_range:
+            return "Mark an In and Out point in the sequence first (I and O)."
+        return ""
 
     def _describe(self):
         engine = self._engine()
@@ -91,11 +116,16 @@ class CaptionsDialog(_Dialog):
         if engine is None:
             self.note.set_text(cap.INSTALL_HINT)
             return
+        problem = self._range_problem()
+        if problem:
+            self.ok_btn.set_sensitive(False)
+            self.note.set_text(problem)
+            return
         name, _, size = cap.MODELS[self.model.get_selected()]
         a, b = self._range()
         seq = self.seq
-        text = f"Captions {tc.frames_to_tc(b - a, seq.fps_num, seq.fps_den)} of the sequence's mixed sound, " \
-               "on your computer. "
+        what = "the selected clips' sound" if self._mode() == "clips" else "the sequence's mixed sound"
+        text = f"Captions {tc.frames_to_tc(b - a, seq.fps_num, seq.fps_den)} of {what}, on your computer. "
         if engine.key == "cpp" and not engine.model_ready(name):
             text += f"The '{name}' model (about {size} MB) is downloaded once, the first time it is used."
         elif engine.key == "openai":
@@ -109,6 +139,8 @@ class CaptionsDialog(_Dialog):
         if engine is None or (self.job is not None):
             return
         seq = self.seq
+        if self._range_problem():
+            return alert(self, "Nothing to caption", self._range_problem())
         a, b = self._range()
         if b - a < 1:
             return alert(self, "Nothing to caption", "The range is empty.")
@@ -121,8 +153,9 @@ class CaptionsDialog(_Dialog):
         self.app.program.pause()
         self._tmp = tempfile.mkdtemp(prefix="tideline-captions-xml-")
         xml = os.path.join(self._tmp, "sequence.mlt")
+        source = self.app.caption_source(self.clip_ids)[0] if self._mode() == "clips" else seq
         try:
-            Builder(self.app.project).write_xml(seq, xml)
+            Builder(self.app.project).write_xml(source, xml)
         except Exception as exc:                      # noqa: BLE001 - shown to the user
             self._cleanup()
             return alert(self, "Could not prepare the sequence", str(exc))

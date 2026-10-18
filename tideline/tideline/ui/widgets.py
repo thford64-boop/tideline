@@ -4,6 +4,7 @@ fields, tabbed panel groups, and dialog helpers."""
 from gi.repository import Gdk, Gio, GLib, GObject, Graphene, Gtk
 
 from .. import timecode as tc
+from . import theme
 from .icons import Icon
 
 
@@ -224,13 +225,26 @@ class TimecodeField(Gtk.Stack):
         return False
 
 
-class PanelGroup(Gtk.Box):
-    """A frame holding one or more panels as tabs."""
+class PanelDrag(GObject.Object):
+    """What a dragged panel tab carries: the panel's key. Its own type keeps
+    panel drags apart from media drags, which drop targets take as text."""
 
-    def __init__(self, window, on_focus=None):
+    key = GObject.Property(type=str, default="")
+
+    def __init__(self, key):
+        super().__init__(key=key)
+
+
+class PanelGroup(Gtk.Box):
+    """A frame holding one or more panels as tabs. With a ``dock`` (the main
+    window) its tabs can be dragged to another group, to a group's edge to
+    split it, or out of the window to float; right-click a tab for more."""
+
+    def __init__(self, window, on_focus=None, dock=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.window = window
         self.on_focus = on_focus
+        self.dock = dock
         self.add_css_class("panel-group")
         self.set_overflow(Gtk.Overflow.HIDDEN)
         self.tabs = Gtk.Box(spacing=0)
@@ -239,13 +253,25 @@ class PanelGroup(Gtk.Box):
         self.stack = Gtk.Stack(vexpand=True, hexpand=True)
         self.stack.add_css_class("panel-body")
         self.append(self.tabs)
-        self.append(self.stack)
+        body = Gtk.Overlay(vexpand=True, hexpand=True)
+        body.set_child(self.stack)
+        self.zone = None              # where a dragged panel would land: a key of dock.ZONES
+        self.hint = Gtk.DrawingArea(can_target=False, hexpand=True, vexpand=True)
+        self.hint.set_draw_func(self._draw_hint)
+        body.add_overlay(self.hint)
+        self.append(body)
         self.buttons = {}
         self.keys = []
         click = Gtk.GestureClick(button=0)
         click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         click.connect("pressed", lambda *_: self.focus_panel())
         self.add_controller(click)
+        if dock is not None:
+            target = Gtk.DropTarget.new(PanelDrag.__gtype__, Gdk.DragAction.MOVE)
+            target.connect("motion", self._drag_motion)
+            target.connect("leave", lambda *_: self._set_zone(None))
+            target.connect("drop", self._drop)
+            self.add_controller(target)
 
     def add(self, key, title, widget):
         btn = Gtk.ToggleButton(label=title)
@@ -254,6 +280,16 @@ class PanelGroup(Gtk.Box):
         if self.buttons:
             btn.set_group(next(iter(self.buttons.values())))
         btn.connect("toggled", lambda b: b.get_active() and self._switch(key))
+        if self.dock is not None:
+            src = Gtk.DragSource(actions=Gdk.DragAction.MOVE)
+            src.connect("prepare", lambda s, x, y: Gdk.ContentProvider.new_for_value(
+                GObject.Value(PanelDrag.__gtype__, PanelDrag(key))))
+            src.connect("drag-begin", lambda s, drag: s.set_icon(Gtk.WidgetPaintable.new(btn), 12, 10))
+            src.connect("drag-cancel", lambda s, drag, reason: self._drag_cancelled(key, reason))
+            btn.add_controller(src)
+            menu = Gtk.GestureClick(button=3)
+            menu.connect("pressed", lambda g, n, x, y: self.dock.tab_menu(btn, key, x, y))
+            btn.add_controller(menu)
         if self.extra.get_parent() is self.tabs:
             self.tabs.remove(self.extra)
         self.tabs.append(btn)
@@ -267,6 +303,8 @@ class PanelGroup(Gtk.Box):
     def _switch(self, key):
         self.stack.set_visible_child_name(key)
         self.focus_panel()
+        if self.dock is not None:
+            self.dock.tab_shown(key)
 
     def show(self, key):
         if key in self.buttons:
@@ -278,6 +316,53 @@ class PanelGroup(Gtk.Box):
     def focus_panel(self):
         if self.on_focus:
             self.on_focus(self, self.current())
+
+    # -- docking -----------------------------------------------------------
+    def zone_at(self, x, y):
+        """Where a panel dropped at (x, y) goes: onto the tab bar or the
+        middle joins this group, near an edge splits it."""
+        top = self.tabs.get_height()
+        w, h = self.get_width(), self.get_height() - top
+        if y < top or w <= 0 or h <= 0:
+            return "center"
+        fx, fy = x / w, (y - top) / h
+        edges = {"left": fx, "right": 1 - fx, "top": fy, "bottom": 1 - fy}
+        side = min(edges, key=edges.get)
+        return side if edges[side] < 0.26 else "center"
+
+    def _set_zone(self, zone):
+        if zone != self.zone:
+            self.zone = zone
+            self.hint.queue_draw()
+
+    def _drag_motion(self, target, x, y):
+        self._set_zone(self.zone_at(x, y))
+        return Gdk.DragAction.MOVE
+
+    def _drop(self, target, value, x, y):
+        zone = self.zone_at(x, y)
+        self._set_zone(None)
+        if not isinstance(value, PanelDrag) or not self.keys:
+            return False
+        GLib.idle_add(lambda: self.dock.dock_panel(value.key, self.keys[0], zone) and False)
+        return True
+
+    def _drag_cancelled(self, key, reason):
+        if reason == Gdk.DragCancelReason.NO_TARGET:
+            GLib.idle_add(lambda: self.dock.float_panel(key) and False)
+        return False
+
+    def _draw_hint(self, area, cr, w, h):
+        if self.zone is None:
+            return
+        x, y, rw, rh = {"left": (0, 0, w / 2, h), "right": (w / 2, 0, w / 2, h), "top": (0, 0, w, h / 2),
+                        "bottom": (0, h / 2, w, h / 2)}.get(self.zone, (0, 0, w, h))
+        cr.set_source_rgba(*theme.rgb(theme.ACCENT, 0.22))
+        cr.rectangle(x + 3, y + 3, rw - 6, rh - 6)
+        cr.fill_preserve()
+        cr.set_source_rgba(*theme.rgb(theme.ACCENT, 0.9))
+        cr.set_line_width(2)
+        cr.stroke()
 
 
 # -- dialogs ---------------------------------------------------------------
