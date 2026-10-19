@@ -32,8 +32,8 @@ manager and run `./install.sh` (into `~/.local`; `--uninstall` removes it).
 whose C library is at least as new as the build machine's:
 
 ```sh
-chmod +x Tideline-0.0.5-x86_64.AppImage
-./Tideline-0.0.5-x86_64.AppImage                 # or with a project file
+chmod +x Tideline-0.0.5.5-x86_64.AppImage
+./Tideline-0.0.5.5-x86_64.AppImage                 # or with a project file
 ```
 
 It carries Python, GTK 4, libadwaita, MLT, FFmpeg, frei0r and Qt; the graphics
@@ -297,8 +297,11 @@ Balanced and Quality presets, or set each part: preview resolution (Full, 1/2,
 1/4, 1/8), preview scaling (fast, smooth, sharp), render threads, dropping late
 frames, how often the timeline and panels follow the playhead while playing
 (the picture always plays at the full frame rate), and whether Effect Controls
-updates during playback. Each monitor's own resolution menu still overrides the
-default. Exports always render at full quality. Preferences and the recent list
+updates during playback. Every preset previews at full resolution with
+automatic render threads: at Full the Program monitor shows exactly what the
+export renders, pixel for pixel. The lower resolutions are faster drafts in
+which effects measured in pixels can look different. Each monitor's own
+resolution menu still overrides the default. Preferences and the recent list
 live in `~/.config/tideline/settings.json`.
 
 **Keyboard shortcuts** — **Edit ▸ Keyboard Shortcuts** (Ctrl+Alt+K) shows a
@@ -427,7 +430,7 @@ and relative path) and are not part of the undo history.
 
 ```sh
 python -m unittest tests.test_core tests.test_engine tests.test_captions tests.test_extensions \
-    tests.test_proxies tests.test_color tests.test_keymap tests.test_dock tests.test_multicam   # 195 tests, no display needed
+    tests.test_proxies tests.test_color tests.test_keymap tests.test_dock tests.test_multicam   # 198 tests, no display needed
 TIDELINE_DEBUG_SCRIPT=tests/ui_smoke.py python -m tideline   # 207 end-to-end UI checks
 ```
 

@@ -9,20 +9,28 @@ from . import PROJECT_EXT
 MAX_RECENT = 15
 
 # Playback quality presets: what each one sets. "Custom" is any other mix.
+# Every preset previews at full resolution, the only size at which the
+# picture is exactly what the export renders; they differ in how hard the
+# interface works while playing.
 QUALITY_PRESETS = {
-    "performance": {"preview_scale": 0.25, "scaling": "nearest", "drop_frames": True, "threads": 2,
+    "performance": {"preview_scale": 1.0, "scaling": "nearest", "drop_frames": True, "threads": 0,
                     "ui_fps": 20, "live_values": False},
-    "balanced": {"preview_scale": 0.5, "scaling": "bilinear", "drop_frames": True, "threads": 1,
+    "balanced": {"preview_scale": 1.0, "scaling": "bilinear", "drop_frames": True, "threads": 0,
                  "ui_fps": 30, "live_values": True},
-    "quality": {"preview_scale": 1.0, "scaling": "bicubic", "drop_frames": False, "threads": 1,
+    "quality": {"preview_scale": 1.0, "scaling": "bicubic", "drop_frames": False, "threads": 0,
                 "ui_fps": 60, "live_values": True},
 }
 QUALITY_NAMES = [("performance", "Performance"), ("balanced", "Balanced"), ("quality", "Quality")]
 PREVIEW_SCALES = [("Full", 1.0), ("1/2", 0.5), ("1/4", 0.25), ("1/8", 0.125)]
+DRAFT_NOTE = ("Below Full the preview is a faster draft: effects measured in pixels (blur, wave, mosaic, "
+              "outlines…) can look different from the export.")
 SCALING = [("nearest", "Fast"), ("bilinear", "Smooth"), ("bicubic", "Sharp")]
-THREADS = [(1, "1 (most compatible)"), (2, "2"), (4, "4"), (0, "Automatic")]
+THREADS = [(1, "1"), (2, "2"), (4, "4"), (0, "Automatic")]
 UI_RATES = [15, 20, 30, 60]
 LAYOUTS = [("editing", "Editing"), ("effects", "Effects"), ("color", "Colour"), ("audio", "Audio")]
+
+# Bumped when the meaning of stored playback settings changes; see Settings.
+VERSION = 2
 
 DEFAULTS = dict(QUALITY_PRESETS["balanced"], quality="balanced", setup_done=False, layout="editing",
                 fullscreen=True, show_launcher=True, recent=[], project_dir="",
@@ -31,7 +39,7 @@ DEFAULTS = dict(QUALITY_PRESETS["balanced"], quality="balanced", setup_done=Fals
                 caption_lines=2, use_proxies=True, proxy_size=540, proxy_codec="mjpeg",
                 proxy_location="project", proxy_auto=0, disabled_extensions=[],
                 scope_mode="waveform", scope_waveform="luma", scope_feed="program", scope_gain=1.0,
-                shortcuts={}, dock_layouts={})
+                shortcuts={}, dock_layouts={}, version=VERSION)
 
 
 def config_dir():
@@ -87,6 +95,18 @@ class Settings(dict):
                     self[k] = v
         if not self["project_dir"]:
             self["project_dir"] = default_project_dir()
+        # A file without a version predates version 2; a new install has none.
+        stored = data.get("version", 1) if isinstance(data, dict) and data else VERSION
+        if not isinstance(stored, int) or stored < VERSION:
+            self._upgrade(data.get("quality"))
+
+    def _upgrade(self, preset):
+        """Settings saved before version 2 had reduced-resolution presets and
+        a single render thread; a preset chosen then takes its current values."""
+        if preset in QUALITY_PRESETS:
+            self.apply_preset(preset)
+        self["version"] = VERSION
+        self.save()
 
     def save(self):
         try:

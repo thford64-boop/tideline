@@ -27,10 +27,12 @@ LAYOUT_TEXT = {
     "audio": "The Audio Mixer up top with a taller Timeline, for mixing levels and balance.",
 }
 QUALITY_TEXT = {
-    "performance": "Smoothest playback on any machine: quarter-resolution preview, fast scaling, "
-                   "frames dropped to keep time, two render threads.",
-    "balanced": "Half-resolution preview with smooth scaling. A good default for most computers.",
-    "quality": "Full-resolution, sharp preview that shows every frame. Needs a fast machine.",
+    "performance": "Exact full-resolution preview with the lightest interface: frames dropped to keep "
+                   "time, panels updated 20 times a second.",
+    "balanced": "Exact full-resolution preview, late frames dropped to keep time. A good default for "
+                "most computers.",
+    "quality": "Exact full-resolution preview that shows every frame, with panels updated 60 times a "
+               "second. Needs a fast machine.",
 }
 
 
@@ -531,10 +533,11 @@ class PreferencesDialog(_Dialog):
             [n for _, n in st.QUALITY_NAMES] + ["Custom"]))
         self.scale = self.add_row("Preview resolution", Gtk.DropDown.new_from_strings(
             [n for n, _ in st.PREVIEW_SCALES]))
+        self.scale.set_tooltip_text("Full shows exactly what the export renders. " + st.DRAFT_NOTE)
         self.scaling = self.add_row("Preview scaling", Gtk.DropDown.new_from_strings([n for _, n in st.SCALING]))
         self.threads = self.add_row("Render threads", Gtk.DropDown.new_from_strings([n for _, n in st.THREADS]))
         self.threads.set_tooltip_text("Render several preview frames at once. Faster on multi-core machines; "
-                                      "a few effects may flicker with more than one thread.")
+                                      "Automatic picks from the number of cores.")
         self.drop = self.add_row("Drop late frames", Gtk.Switch(halign=Gtk.Align.START))
         self.drop.set_tooltip_text("Skip frames that are not ready in time so playback keeps pace with the "
                                    "audio. Off shows every frame, but may stutter.")

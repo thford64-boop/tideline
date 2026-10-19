@@ -263,13 +263,13 @@ def _apply_motion(filters, effect, ctx):
     names = ("position", "scale") if uniform else ("position", "scale", "scale_w")
     times = kf.sample_times(*[effect.keyframes.get(n) for n in names])
     rect = kf.sampled_to_mlt(times, rect_at) if times else rect_at(None)
-    f.set("transition.rect", rect)
+    f.set("rect", rect)
     rot = effect.keyframes.get("rotation")
     if rot:
-        f.set("transition.fix_rotate_x", kf.to_mlt(rot))
+        f.set("rotation", kf.to_mlt(rot))
     else:
-        f.set("transition.fix_rotate_x", float(effect.params.get("rotation", 0.0)))
-    f.set("transition.distort", 0 if uniform else 1)
+        f.set("rotation", float(effect.params.get("rotation", 0.0)))
+    f.set("distort", 0 if uniform else 1)
     identity = (not times and not rot and float(effect.params.get("rotation", 0.0)) == 0.0
                 and rect == f"0.000 0.000 {W:.3f} {H:.3f} 1")
     f.set("disable", 1 if (identity or not effect.enabled) else 0)
@@ -506,7 +506,7 @@ def _apply_text(filters, effect, ctx):
 
 
 def _apply_text_motion(text_filter, movers, effect, ctx, text_shift):
-    """The in and out animations: an affine filter limited to each one's
+    """The in and out animations: a transform filter limited to each one's
     frames moves and scales the text about its centre; its opacity fades
     the text filter itself."""
     W, H = ctx["width"], ctx["height"]
@@ -536,8 +536,8 @@ def _apply_text_motion(text_filter, movers, effect, ctx, text_shift):
             dx, dy, sc, op = at(t)
             rects.append(f"{t + shift}={ax - ax * sc + dx:.2f} {ay - ay * sc + dy:.2f} {W * sc:.2f} {H * sc:.2f} 1")
             fades.append((t, op))
-        mover.set("transition.rect", ";".join(rects) or f"0 0 {W} {H} 1")
-        mover.set("transition.distort", 0)
+        mover.set("rect", ";".join(rects) or f"0 0 {W} {H} 1")
+        mover.set("distort", 0)
         mover.set("disable", 0)
     if fades and any(op < 0.999 for _, op in fades):
         fades = sorted(dict(fades).items())
@@ -716,9 +716,9 @@ def _apply_generated_motion(filters, effect, ctx):
         w, h = W * max(0.01, sc), H * max(0.01, sc)
         rects.append(f"{t}={W / 2 + dx - w / 2:.2f} {H / 2 + dy - h / 2:.2f} {w:.2f} {h:.2f} 1")
         rots.append(f"{t}={rot:.3f}")
-    f.set("transition.rect", ";".join(rects))
-    f.set("transition.fix_rotate_x", ";".join(rots))
-    f.set("transition.distort", 0)
+    f.set("rect", ";".join(rects))
+    f.set("rotation", ";".join(rots))
+    f.set("distort", 0)
     f.set("disable", 0)
 
 
@@ -833,8 +833,11 @@ def _db_to_linear(v):
     return 10 ** (float(v) / 20.0)
 
 
-_MOTION_STATIC = {"background": "color:#00000000", "transition.fill": 1, "transition.valign": "middle",
-                  "transition.halign": "center", "transition.threads": 0}
+# Motion, the Animate effects and the text animations move the picture with
+# MLT's qtblend filter. It reads the source at about the size it is drawn,
+# where affine first scaled the source up to the whole rectangle: a still at
+# 1000% became a 16000-pixel image on every frame.
+_MOTION_STATIC = {"rotate_center": 1}
 HALIGN = [("left", "Left"), ("center", "Centre"), ("right", "Right")]
 VALIGN = [("top", "Top"), ("middle", "Middle"), ("bottom", "Bottom")]
 
@@ -848,15 +851,13 @@ def _reg(*defs):
 
 # -- intrinsic effects (always present on a clip) -------------------------
 _reg(
-    EffectDef("motion", "Motion", "Fixed", "video", ["affine"], [
+    EffectDef("motion", "Motion", "Fixed", "video", ["qtblend"], [
         Param("position", "Position", "point", None, unit="px"),
         F("scale", "Scale", 100.0, 0.0, 1000.0, unit="%"),
         F("scale_w", "Scale Width", 100.0, 0.0, 1000.0, unit="%"),
         Param("uniform", "Uniform Scale", "bool", True, key=False),   # links the two scale rows
         F("rotation", "Rotation", 0.0, -3600.0, 3600.0, unit="°"),
-    ], static={"background": "color:#00000000", "transition.fill": 1, "transition.valign": "middle",
-               "transition.halign": "center", "transition.threads": 0},
-        intrinsic=True, stage=2, custom=_apply_motion),
+    ], static=dict(_MOTION_STATIC), intrinsic=True, stage=2, custom=_apply_motion),
     EffectDef("opacity", "Opacity", "Fixed", "video", ["brightness", "cairoblend_mode"], [
         F("opacity", "Opacity", 100.0, 0.0, 100.0, unit="%"),
         CH("blend", "Blend Mode", BLEND_MODES),
@@ -879,9 +880,9 @@ _reg(EffectDef("time_remap", "Time Remapping", "Fixed", "any", [], [
 ], hidden=True, stage=0, custom=lambda filters, effect, ctx: None))
 
 # -- text -----------------------------------------------------------------
-# One qtext filter draws the text; two affine filters, each limited to its
+# One qtext filter draws the text; two transform filters, each limited to its
 # frames, play the in and out animations.
-_reg(EffectDef("text", "Text", "Generate", "video", ["qtext", "affine", "affine"], [
+_reg(EffectDef("text", "Text", "Generate", "video", ["qtext", "qtblend", "qtblend"], [
     Param("text", "Text", "text", "Title"),
     Param("font", "Font", "font", "Sans"),
     I("size", "Size", 96, 4, 800, unit="px", anim="bake"),
@@ -907,7 +908,7 @@ _PAN_EASES = [("linear", "Linear"), ("ease", "Ease In/Out"), ("ease_in", "Ease I
 
 
 def _generated(key, label, motion, params):
-    return EffectDef(key, label, "Animate", "video", ["affine"], params, static=dict(_MOTION_STATIC),
+    return EffectDef(key, label, "Animate", "video", ["qtblend"], params, static=dict(_MOTION_STATIC),
                      custom=_apply_generated_motion, motion=motion, preview=_motion_preview, baked=True)
 
 

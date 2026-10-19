@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from . import hwenc
 from .builder import Builder
+from .mltlib import RENDER_RESCALE
 
 
 @dataclass
@@ -170,7 +171,8 @@ class ExportJob:
             out = f"{base}_%05d{ext or fmt.ext}"
         cmd += ["-consumer", "avformat:" + out]
         props = {"real_time": str(-(s.threads or max(1, min(4, (os.cpu_count() or 2) // 2)))),
-                 "progressive": "1", "ar": str(self.seq.sample_rate), "channels": "2"}
+                 "rescale": RENDER_RESCALE, "progressive": "1", "ar": str(self.seq.sample_rate),
+                 "channels": "2"}
         if scaled:
             props.update(width=str(s.width), height=str(s.height), sample_aspect_num="1",
                          sample_aspect_den="1")

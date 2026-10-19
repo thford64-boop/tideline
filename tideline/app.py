@@ -2406,7 +2406,7 @@ class App(Adw.Application):
         graph = Builder(self.project).build(seq)
         graph.tractor.seek(max(0, min(frame_no, graph.length - 1)))
         f = graph.tractor.get_frame()
-        f.set("consumer.rescale", "bicubic")
+        f.set("consumer.rescale", mltlib.RENDER_RESCALE)
         data = mltlib.mlt.frame_get_image(f, mltlib.IMAGE_RGB, seq.width, seq.height)
         pix = GdkPixbuf.Pixbuf.new_from_bytes(GLib.Bytes.new(data), GdkPixbuf.Colorspace.RGB,
                                               False, 8, seq.width, seq.height, seq.width * 3)

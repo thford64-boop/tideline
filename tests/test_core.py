@@ -585,10 +585,30 @@ class Settings(unittest.TestCase):
         s["layout"], s["setup_done"] = "audio", True
         s.save()
         t = st.Settings(self.file)
-        self.assertEqual((t["layout"], t["setup_done"], t["preview_scale"]), ("audio", True, 0.25))
+        self.assertEqual((t["layout"], t["setup_done"], t["ui_fps"]), ("audio", True, 20))
         self.assertEqual(st.matching_preset(t), "performance")
         t["ui_fps"] = 15
         self.assertEqual(st.matching_preset(t), "custom")
+
+    def test_every_preset_previews_at_full_resolution(self):
+        # Only a full-resolution preview is exactly what the export renders.
+        for values in st.QUALITY_PRESETS.values():
+            self.assertEqual((values["preview_scale"], values["threads"]), (1.0, 0))
+
+    def test_old_settings_take_the_new_preset_values(self):
+        with open(self.file, "w") as fh:
+            json.dump({"quality": "performance", "preview_scale": 0.25, "threads": 2, "layout": "audio"}, fh)
+        s = st.Settings(self.file)
+        self.assertEqual((s["preview_scale"], s["threads"], s["layout"]), (1.0, 0, "audio"))
+        self.assertEqual(st.matching_preset(s), "performance")
+        self.assertEqual(st.Settings(self.file)["version"], st.VERSION)      # upgraded once, then kept
+        with open(self.file, "w") as fh:
+            json.dump({"quality": "custom", "preview_scale": 0.5}, fh)
+        self.assertEqual(st.Settings(self.file)["preview_scale"], 0.5)       # a custom choice is kept
+        s = st.Settings(self.file)
+        s["preview_scale"] = 0.25
+        s.save()
+        self.assertEqual(st.Settings(self.file)["preview_scale"], 0.25)      # and later choices stick
 
     def test_bad_values_fall_back(self):
         with open(self.file, "w") as fh:

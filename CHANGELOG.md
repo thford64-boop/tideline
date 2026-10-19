@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.0.5.5 (2026-10-19)
+
+- **The preview is the export**: every playback preset now previews at full
+  resolution, and at Full the Program monitor resamples pictures the way the
+  export does, so what you see is pixel for pixel what renders (checked for
+  every effect; a test keeps it so). Export Frame matches too. Lower preview
+  resolutions are still in Preferences and the monitor menus as faster drafts,
+  marked as possibly different. Noise and Glitch stay random on every render.
+- **Much faster playback**: Motion, the Animate effects and title animations
+  move pictures with MLT's qtblend instead of affine. A still scaled up no
+  longer becomes a huge image on every frame (a 255×285 picture at 1000% went
+  from 46 ms to 2 ms a frame), and moving or scaling any clip costs a half to a
+  third of what it did. Presets render preview frames on several threads
+  (Automatic: up to four); every effect but Noise and Glitch was checked to
+  render the same on four threads as on one. A 1080×1920 short with stills,
+  titles and drop shadows now plays at full resolution and full frame rate
+  where it dropped to 22 fps, and seeking shows the frame in about 27 ms
+  instead of up to half a second.
+- Settings from earlier versions that use a preset pick up its new values once;
+  custom settings are kept.
+
 ## 0.0.5 (2026-10-18)
 
 - **Multi-camera editing**: Clip ▸ Multi-Camera ▸ Create Multi-Camera Sequence

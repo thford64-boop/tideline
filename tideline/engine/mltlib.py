@@ -52,6 +52,9 @@ for _fn in ("mlt_consumer_start", "mlt_consumer_stop", "mlt_consumer_purge",
     getattr(lib, _fn).restype = ctypes.c_int
 
 IMAGE_RGB = mlt.mlt_image_rgb
+# How exports resample a picture whose size differs from the frame. Previews
+# at full resolution use the same method, so they match the export exactly.
+RENDER_RESCALE = "bilinear"
 IMAGE_RGBA = mlt.mlt_image_rgba
 
 _initialised = False

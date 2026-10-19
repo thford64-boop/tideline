@@ -330,7 +330,7 @@ def run(app):
     row("motion", "scale").numbers[0].emit("changed", 50.0, True)
     yield 300
     check("Effect Controls edits scale", pip().effect("motion").params.get("scale") == 50.0)
-    rect = app.graph.filters[pip().effect("motion").id][0][1][0].get("transition.rect")
+    rect = app.graph.filters[pip().effect("motion").id][0][1][0].get("rect")
     check("the live graph follows without a rebuild", rect.startswith("160.000 90.000 320.000 180.000"), rect)
     app.set_playhead(70)
     row("opacity", "opacity").watch.set_active(True)
@@ -388,7 +388,7 @@ def run(app):
     yield 400
     shake = lambda: pip().effect("shake")
     built = app.graph
-    rect = lambda: app.graph.filters[shake().id][0][1][0].get("transition.rect")
+    rect = lambda: app.graph.filters[shake().id][0][1][0].get("rect")
     before = rect()
     check("Shake animates the picture on every frame", before.count(";") >= 239, before[:60])
     row("shake", "x").numbers[0].emit("changed", 200.0, True)

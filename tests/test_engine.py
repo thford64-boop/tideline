@@ -17,7 +17,7 @@ from tideline.engine import media as mediamod
 from tideline.engine.builder import Builder
 from tideline.engine.effects import EFFECTS, TRANSITIONS
 from tideline.engine.export import ExportJob, ExportSettings
-from tideline.engine.mltlib import has_service, mlt
+from tideline.engine.mltlib import RENDER_RESCALE, has_service, mlt
 from tideline.model import Effect, MediaItem, Project, Sequence
 
 TMP = None
@@ -240,7 +240,7 @@ class Graphs(Base):
             img = frame(g, pos)
             for x, y in corners:
                 self.assertColor(px(img, x, y), GREEN, msg=f"frame {pos}")
-        rect = g.filters[shake.id][0][1][0].get("transition.rect")
+        rect = g.filters[shake.id][0][1][0].get("rect")
         self.assertEqual(len(rect.split(";")), 90)
         self.assertGreater(len(set(rect.split(";")[i].split("=")[1] for i in range(90))), 80)
         shake.params["fit"] = False
@@ -696,6 +696,47 @@ class Export(Base):
         streams = self.probe_out(path)
         self.assertIn(f"h264,{W},{H},90", streams)
         self.assertTrue(any(s.startswith("aac") for s in streams))
+
+    def test_full_resolution_preview_matches_the_export(self):
+        # At Full the Program monitor renders the graph the export renders, so
+        # the pictures agree pixel for pixel: effects measured in pixels, a
+        # source that has to be resampled, a moved and rotated picture, a title.
+        src = f"{TMP}/texture.mp4"
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        "testsrc2=size=960x540:rate=30:duration=2", "-c:v", "libx264", "-preset", "ultrafast",
+                        "-pix_fmt", "yuv420p", src], check=True)
+        tex = self.p.add_media(mediamod.probe(src))
+        c = self.ed.place(tex, 0, src_out=30)[0]
+        for key in ("wave", "mosaic", "directional_blur", "vignette", "sharpen"):
+            c.effects.append(Effect(key))
+        d = self.ed.place(tex, 0, v_track=self.v[1], src_out=30)[0]
+        d.effect("motion").params.update(scale=45.0, position=[W * 0.7, H * 0.3], rotation=12.0)
+        d.effects.insert(0, Effect("text", params={"text": "Match", "size": 60, "stroke_width": 4}))
+        d.effects.append(Effect("drop_shadow"))
+        e = self.ed.place(self.red, 0, v_track=self.v[2], src_out=30)[0]
+        e.effect("motion").params.update(scale=300.0, position=[W * 0.1, H * 0.9])
+        out = f"{TMP}/match.png"
+        job = ExportJob(self.p, self.seq, ExportSettings(format="png", path=out, range_in=5, range_out=8,
+                                                         audio=False))
+        done = []
+        job.on_done = done.append
+        job.start()
+        t0 = time.time()
+        while not done and time.time() - t0 < 60:
+            time.sleep(0.05)
+        self.assertEqual(job.error, "")
+        files = sorted(f for f in os.listdir(TMP) if f.startswith("match_") and f.endswith(".png"))
+        self.assertEqual(len(files), 3)
+        g = self.build()
+        for pos, name in zip((5, 6, 7), files):
+            raw = subprocess.run(["ffmpeg", "-v", "error", "-i", f"{TMP}/{name}", "-f", "rawvideo",
+                                  "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+            exported = np.frombuffer(raw, np.uint8).reshape(H, W, 3).astype(int)
+            g.tractor.seek(pos)
+            f = g.tractor.get_frame()
+            f.set("consumer.rescale", RENDER_RESCALE)
+            shown = np.frombuffer(mlt.frame_get_image(f, mlt.mlt_image_rgb, W, H), np.uint8).reshape(H, W, 3)
+            self.assertLessEqual(int(np.abs(shown.astype(int) - exported).max()), 1, f"frame {pos}")
 
     def test_range_and_scaled(self):
         path = f"{TMP}/export_scaled.mp4"

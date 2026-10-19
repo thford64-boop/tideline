@@ -6,7 +6,7 @@ import cairo
 from gi.repository import Gdk, GLib, GObject, Graphene, Gsk, Gtk
 
 from ..engine.effects import EFFECTS
-from ..settings import PREVIEW_SCALES
+from ..settings import DRAFT_NOTE, PREVIEW_SCALES
 from . import theme
 from .widgets import TimecodeField, icon_button, set_button_icon
 
@@ -174,7 +174,7 @@ class MonitorPanel(Gtk.Box):
         self.res = Gtk.DropDown.new_from_strings([r[0] for r in RESOLUTIONS])
         self.res.add_css_class("flat")
         self._sync_resolution()
-        self.res.set_tooltip_text("Playback resolution (default in Edit ▸ Preferences)")
+        self.res.set_tooltip_text("Playback resolution (default in Edit ▸ Preferences). " + DRAFT_NOTE)
         self.res.set_focusable(False)
         self.res.connect("notify::selected", lambda d, p: self.player.set_scale(RESOLUTIONS[d.get_selected()][1]))
         app.on("playback_prefs", self._sync_resolution)

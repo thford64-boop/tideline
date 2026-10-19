@@ -32,7 +32,7 @@ class Player:
         self.length = 1
         self.speed = 0.0
         self.scale = 0.5         # preview resolution factor
-        self.scaling = "bilinear"   # MLT rescale method for the preview picture
+        self.scaling = "bilinear"   # MLT rescale method for reduced-resolution previews
         self.threads = 1         # render threads (MLT parallel consumer)
         self.drop_frames = True  # skip frames to keep up with real time
         self.volume = 1.0
@@ -117,7 +117,9 @@ class Player:
         # real_time: N render threads; negative waits for every frame
         # instead of dropping late ones.
         real_time = self.threads if self.drop_frames else -self.threads
-        for k, v in (("real_time", real_time), ("rescale", self.scaling), ("mlt_image_format", "rgb"),
+        # At full resolution the preview resamples exactly as the export does.
+        rescale = mltlib.RENDER_RESCALE if self.scale >= 1.0 else self.scaling
+        for k, v in (("real_time", real_time), ("rescale", rescale), ("mlt_image_format", "rgb"),
                      ("buffer", 5 + self.threads), ("prefill", 1), ("scrub_audio", 0), ("channels", 2),
                      ("frequency", 48000), ("progressive", 1), ("terminate_on_pause", 0),
                      ("volume", float(self.volume))):
