@@ -23,4 +23,5 @@ version = {attr = "tideline.VERSION"}
 include = ["tideline*"]
 
 [tool.setuptools.package-data]
-tideline = ["data/presets/*.tlpreset", "data/icons/hicolor/*/apps/*"]
+tideline = ["data/presets/*.tlpreset", "data/icons/hicolor/*/apps/*",
+                      "data/extensions/*/*.py", "data/extensions/*/*.json", "data/extensions/*/*.md"]

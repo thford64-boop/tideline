@@ -61,6 +61,12 @@ from the Effects panel; export formats appear in the Export dialog.
 - `TIDELINE_EXTENSIONS_PATH=/path/one:/path/two` loads extensions from extra
   folders too, which is handy while you develop one in a project folder.
 - `TIDELINE_NO_EXTENSIONS=1` starts Tideline with no extensions at all.
+- Tideline ships two extensions of its own, DeepVoice (`frito.deepvoice`) and
+  Cutout (`frito.cutout`), in `tideline/data/extensions/`. They are complete
+  examples of Python extensions that run work in the background and swap a
+  clip's media. A folder in the user extensions folder with the same `id`
+  is loaded instead of the built-in one; turning a built-in extension off in
+  Manage Extensions works like any other.
 - An extension's own saved settings (see `tl.settings`) are kept in
   `~/.config/tideline/extension-data/<id>/settings.json`.
 

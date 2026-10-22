@@ -32,8 +32,8 @@ manager and run `./install.sh` (into `~/.local`; `--uninstall` removes it).
 whose C library is at least as new as the build machine's:
 
 ```sh
-chmod +x Tideline-0.0.5.5-x86_64.AppImage
-./Tideline-0.0.5.5-x86_64.AppImage                 # or with a project file
+chmod +x Tideline-0.0.6-x86_64.AppImage
+./Tideline-0.0.6-x86_64.AppImage                 # or with a project file
 ```
 
 It carries Python, GTK 4, libadwaita, MLT, FFmpeg, frei0r and Qt; the graphics
@@ -83,10 +83,14 @@ and is what new sequences start with. Clips keep their place in the frame:
 positions and their keyframes move in proportion. Sequence Settings has the
 same aspect ratio and resolution pickers for one sequence.
 
-**Effects** — every clip has Motion (position, scale, rotation), Opacity with
-blend modes, Volume and Balance. 71 more effects (55 video, 16 audio: colour
-correction, curves, colour wheels, LUTs, blurs, keying, crop, distortion, stylise, EQ,
-dynamics, pitch…) come from the Effects panel, each editable in Effect Controls.
+**Effects** — every clip has Motion (position, scale, rotation and an anchor
+point to scale and turn about), Opacity with blend modes, Volume and Balance.
+91 more effects (71 video, 20 audio: colour correction, curves, colour wheels,
+LUTs, Colorize, Random Color, Hue Cycle, Color Pass, Channel Mixer, False
+Colour, blurs, keying, crop, skew, letterbox, distortion, Pixelate, Halftone,
+Kaleidoscope, Scanlines and other stylise effects, EQ, dynamics, Bitcrusher,
+Flanger, Phaser, Vibrato, pitch…) come from the Effects panel, each editable in
+Effect Controls.
 
 **RGB Curves** — **Effects ▸ Color ▸ RGB Curves** draws master, red, green and
 blue curves in an editor inside Effect Controls, over the histogram of the
@@ -144,18 +148,25 @@ scale rows; a title's animations, which are movement in themselves; and RGB
 Curves, Colour Wheels, Hue / Saturation Curves and Secondary Correction, which
 are edited as a whole.
 
-**Animate** — seven effects that move the picture without keyframes: Shake
+**Animate** — eleven effects that move the picture without keyframes: Shake
 (seeded camera shake with position, rotation and zoom, optionally scaled to
 hide its edges), Oscillate (sine, triangle, square, sawtooth or bounce; also
-circular), Spin, Pulse (to a tempo), Pan & Zoom, Strobe and Flicker. Their
-Amount can itself be keyframed, and Effect Controls plots the resulting motion
-over the clip.
+circular), Spin, Pulse (to a tempo), Swing (a pendulum that can settle),
+Bounce (hops with a squash on landing), Squash & Stretch, Animate In / Out
+(fade, pop, zoom, slide or drop a clip in and out), Pan & Zoom, Strobe and
+Flicker. Spin, Pulse, Oscillate, Swing, Bounce and Squash & Stretch turn and
+scale about a Pivot Point you can move (Swing hangs from the top, Bounce
+stands on the bottom). Their Amount can itself be keyframed, and Effect
+Controls plots the resulting motion over the clip.
 
 **Keyframe graphs** — an animated parameter folds out a graph (the curve
 button beside its keyframe controls). Drag keyframes in time and value (Shift
 locks an axis), double-click to add one, drag the handles of the selected
 keyframe to draw a custom Bezier curve, and right-click for presets: linear,
-hold, ease, sine, expo, overshoot, elastic and bounce. Dragging empty space
+hold, ease, sine, expo, circ, overshoot, elastic and bounce. **Graph Presets**
+in the same menu are ready-made curves (Smooth, Snappy, Whip, Anticipate,
+Soft and Big Overshoot, Slow Middle…); **Save Curve as Preset** keeps a curve
+you drew for use on other keyframes. Dragging empty space
 scrubs the playhead. A colour is drawn as its red, green, blue and alpha
 curves over a strip of the colour itself; a switch or choice as a staircase
 between its options; text, fonts and files as a lane of labelled keyframes.
@@ -259,9 +270,13 @@ offline, so a project can be cut on a laptop with only its proxies. If the
 original file changes, its proxy is ignored until you make a new one.
 
 **Extensions** — folders in `~/.config/tideline/extensions` that add effects,
-transitions, export formats, presets, menu commands and event hooks. None are
-included; **Extensions ▸ Manage Extensions** installs them (from a zip or a
-folder), turns them on or off and shows what each added or why it failed. See
+transitions, export formats, presets, menu commands and event hooks. Two come
+built in: **DeepVoice** (isolate or remove a voice with a Demucs AI model) and
+**Cutout** (remove the background of a picture or video with SAM 2), both
+running on your own computer; each sets up its AI the first time from its
+**Extensions** menu. **Extensions ▸ Manage Extensions** installs more (from a
+zip or a folder), turns them on or off and shows what each added or why it
+failed. A copy installed in the user folder replaces a built-in one. See
 [Writing extensions](#writing-extensions) below and the full guide in
 [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 
@@ -430,7 +445,7 @@ and relative path) and are not part of the undo history.
 
 ```sh
 python -m unittest tests.test_core tests.test_engine tests.test_captions tests.test_extensions \
-    tests.test_proxies tests.test_color tests.test_keymap tests.test_dock tests.test_multicam   # 198 tests, no display needed
+    tests.test_proxies tests.test_color tests.test_keymap tests.test_dock tests.test_multicam   # 204 tests, no display needed
 TIDELINE_DEBUG_SCRIPT=tests/ui_smoke.py python -m tideline   # 207 end-to-end UI checks
 ```
 

@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.0.6 (2026-10-22)
+
+- **DeepVoice and Cutout are built in**: isolate or remove a voice (Demucs)
+  and remove the background of a picture or video (SAM 2), both running on
+  your own computer, now ship with Tideline under the Extensions menu. Each
+  downloads its AI the first time you run its Set Up AI command. A copy
+  installed in the user extensions folder still takes their place;
+  Manage Extensions marks the built-in ones.
+- **Anchor point**: Motion has an Anchor Point, the spot of the picture that
+  sits at Position and that it scales and turns about. The Program monitor's
+  box and handles follow it, and clicking a turned picture selects it where
+  it really is.
+- **Pivot point**: Spin, Pulse and Oscillate, and the new Swing, Bounce and
+  Squash & Stretch, turn and scale about a Pivot Point that can be moved and
+  keyframed.
+- **New Animate effects**: Swing (a pendulum hinged at the top that can
+  settle), Bounce (hops with a squash on landing), Squash & Stretch, and
+  Animate In / Out, which fades, pops, zooms, slides or drops any clip in and
+  out the way titles animate.
+- **New colour effects**: Colorize (paint the picture in one colour, keeping
+  its brightness), Random Color (a new random hue several times a second,
+  jumping or gliding, the same on every render), Hue Cycle, Color Pass (keep
+  one colour, turn the rest grey), Channel Mixer and False Colour.
+- **New stylise and transform effects**: Pixelate (square blocks in pixels;
+  animate the size to pixelate in or out), Halftone, Kaleidoscope, Scanlines,
+  Skew and Letterbox.
+- **New audio effects**: Flanger, Phaser, Vibrato and Bitcrusher.
+- **Graph presets**: right-click a keyframe for Graph Presets, ready-made
+  curves (Smooth, Gentle, Snappy, Whip, Accelerate, Decelerate, Standard
+  Motion, Anticipate, Anticipate & Overshoot, Soft and Big Overshoot, Slow
+  Middle), and Save Curve as Preset to keep your own. Circ In / Out joins the
+  easing curves.
+
 ## 0.0.5.5 (2026-10-19)
 
 - **The preview is the export**: every playback preset now previews at full
