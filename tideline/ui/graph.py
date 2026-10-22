@@ -310,7 +310,7 @@ class KeyframeGraph(Gtk.DrawingArea):
         if kind == "key":
             self.selected = what[0]
             panel.interp_time = self.keys()[what[0]][0]
-            menu = Gio.Menu() if self.pdef.hold else interp_menu()
+            menu = Gio.Menu() if self.pdef.hold else interp_menu(self.app)
             section = Gio.Menu()
             section.append("Delete Keyframe", "ec.kf_delete")
             menu.append_section(None, section)

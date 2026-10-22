@@ -10,6 +10,7 @@ the ones MLT only reads once are covered by several copies of the filter, each
 limited to the frames over which the value is constant (``EffectDef.segments``).
 """
 
+import colorsys
 import math
 from dataclasses import dataclass, field
 
@@ -47,6 +48,8 @@ class Param:
     # "bake" one filter per frame the value changes on, "hold" the value only
     # changes at keyframes (filters that would restart if it moved every frame).
     anim: str = "smooth"
+    # A point with no default sits at this fraction of the frame (centre).
+    frac: tuple = (0.5, 0.5)
 
     @property
     def hold(self):
@@ -200,8 +203,8 @@ class EffectDef:
         p = self.param(name)
         if p is None:
             return None
-        if p.name == "position" and p.default is None and ctx is not None:
-            return [ctx["width"] / 2, ctx["height"] / 2]
+        if p.type == "point" and p.default is None and ctx is not None:
+            return [ctx["width"] * p.frac[0], ctx["height"] * p.frac[1]]
         if p.type == "curves":
             return curvesmod.default()
         if p.type == "huecurves":
@@ -248,19 +251,48 @@ BLEND_MODES = [
 
 
 # -- custom appliers -----------------------------------------------------
+def turned(dx, dy, degrees):
+    """(dx, dy) turned by ``degrees`` clockwise on screen, the way qtblend
+    and the monitor overlay turn a picture."""
+    r = math.radians(degrees)
+    return dx * math.cos(r) - dy * math.sin(r), dx * math.sin(r) + dy * math.cos(r)
+
+
+def motion_box(pos, anchor, sw, sh, rotation, W, H):
+    """Centre (cx, cy) and size (w, h) of the picture Motion draws: the
+    anchor point of the picture sits at ``pos``, and the picture is scaled
+    (``sw``, ``sh`` in %) and turned about it."""
+    w, h = W * sw / 100.0, H * sh / 100.0
+    ax, ay = anchor if anchor is not None else (W / 2, H / 2)
+    ox, oy = turned((W / 2 - ax) * sw / 100.0, (H / 2 - ay) * sh / 100.0, rotation)
+    return pos[0] + ox, pos[1] + oy, w, h
+
+
+def _centred(effect, name, W, H):
+    """True when a point parameter stays at the middle of the frame."""
+    if effect.keyframes.get(name):
+        return False
+    v = effect.params.get(name)
+    return v is None or (abs(v[0] - W / 2) < 1e-6 and abs(v[1] - H / 2) < 1e-6)
+
+
 def _apply_motion(filters, effect, ctx):
     f = filters[0]
     W, H = ctx["width"], ctx["height"]
     uniform = effect.params.get("uniform", True)
+    centred = _centred(effect, "anchor", W, H)
 
     def rect_at(t):
         pos = effect.value("position", t) or [W / 2, H / 2]
         sh = max(0.01, float(effect.value("scale", t, 100.0)))
         sw = sh if uniform else max(0.01, float(effect.value("scale_w", t, 100.0)))
-        w, h = W * sw / 100.0, H * sh / 100.0
-        return f"{pos[0] - w / 2:.3f} {pos[1] - h / 2:.3f} {w:.3f} {h:.3f} 1"
+        anchor = None if centred else effect.value("anchor", t)
+        cx, cy, w, h = motion_box(pos, anchor, sw, sh, float(effect.value("rotation", t, 0.0)), W, H)
+        return f"{cx - w / 2:.3f} {cy - h / 2:.3f} {w:.3f} {h:.3f} 1"
 
-    names = ("position", "scale") if uniform else ("position", "scale", "scale_w")
+    names = ["position", "scale"] + ([] if uniform else ["scale_w"])
+    if not centred:
+        names += ["anchor", "rotation"]           # turning about the anchor moves the picture
     times = kf.sample_times(*[effect.keyframes.get(n) for n in names])
     rect = kf.sampled_to_mlt(times, rect_at) if times else rect_at(None)
     f.set("rect", rect)
@@ -703,6 +735,26 @@ def _steps(pairs, fmt):
     return ";".join(parts) or "0"
 
 
+def _motion_parts(v):
+    """A motion function's answer as (dx, dy, degrees, scale x, scale y,
+    opacity): it may give one scale for both axes and leave out opacity."""
+    if len(v) == 4:
+        return v[0], v[1], v[2], v[3], v[3], 1.0
+    if len(v) == 5:
+        return tuple(v) + (1.0,)
+    return tuple(v)
+
+
+def _pivot(effect, ctx):
+    """fn(frame) -> the point the picture turns and scales about."""
+    edef = EFFECTS[effect.type]
+    if edef.param("pivot") is None:
+        centre = (ctx["width"] / 2, ctx["height"] / 2)
+        return lambda t: centre
+    default = edef.default("pivot", ctx)
+    return lambda t: effect.value("pivot", t) or default
+
+
 def _apply_generated_motion(filters, effect, ctx):
     f = filters[0]
     W, H = ctx["width"], ctx["height"]
@@ -710,22 +762,33 @@ def _apply_generated_motion(filters, effect, ctx):
         f.set("disable", 1)
         return
     at = EFFECTS[effect.type].motion(effect, ctx)
-    rects, rots = [], []
+    pivot = _pivot(effect, ctx)
+    rects, rots, distort = [], [], False
     for t in _frames(ctx):
-        dx, dy, rot, sc = at(t)
-        w, h = W * max(0.01, sc), H * max(0.01, sc)
-        rects.append(f"{t}={W / 2 + dx - w / 2:.2f} {H / 2 + dy - h / 2:.2f} {w:.2f} {h:.2f} 1")
+        dx, dy, rot, sx, sy, op = _motion_parts(at(t))
+        sx, sy = max(0.01, sx), max(0.01, sy)
+        px_, py_ = pivot(t)
+        ox, oy = turned((W / 2 - px_) * sx, (H / 2 - py_) * sy, rot)
+        w, h = W * sx, H * sy
+        cx, cy = px_ + ox + dx, py_ + oy + dy
+        distort = distort or abs(sx - sy) > 1e-6
+        rects.append(f"{t}={cx - w / 2:.2f} {cy - h / 2:.2f} {w:.2f} {h:.2f} {max(0.0, min(1.0, op)):.4g}")
         rots.append(f"{t}={rot:.3f}")
     f.set("rect", ";".join(rects))
     f.set("rotation", ";".join(rots))
-    f.set("distort", 0)
+    f.set("distort", 1 if distort else 0)
     f.set("disable", 0)
 
 
 def _motion_preview(effect, ctx):
     at = EFFECTS[effect.type].motion(effect, ctx)
-    return [("X", lambda t: at(t)[0]), ("Y", lambda t: at(t)[1]),
-            ("Rotation", lambda t: at(t)[2]), ("Scale", lambda t: at(t)[3] * 100.0)]
+    out = [("X", lambda t: at(t)[0]), ("Y", lambda t: at(t)[1]),
+           ("Rotation", lambda t: at(t)[2]), ("Scale", lambda t: at(t)[3] * 100.0)]
+    if effect.type in ("squash", "bounce"):
+        out.append(("Scale Y", lambda t: _motion_parts(at(t))[4] * 100.0))
+    if effect.type == "clip_anim":
+        out.append(("Opacity", lambda t: _motion_parts(at(t))[5] * 100.0))
+    return out
 
 
 def _shake_motion(effect, ctx):
@@ -797,6 +860,79 @@ def _pan_zoom_motion(effect, ctx):
     return at
 
 
+def _seconds_in(effect, ctx):
+    """fn(frame) -> seconds since the clip's first frame."""
+    first = int((ctx.get("clip") or ctx.get("range") or (0, 0))[0])
+    return lambda t: max(0.0, t - first) / ctx["fps"]
+
+
+def _swing_motion(effect, ctx):
+    g = lambda name, default: _at(effect, name, default)
+    angle, phase, decay = g("angle", 15.0), g("phase", 0.0), g("decay", 0.0)
+    cycles, secs = _cycles(effect, "frequency", 1.0, ctx), _seconds_in(effect, ctx)
+
+    def at(t):
+        damp = math.exp(-max(0.0, float(decay(t))) * secs(t))
+        swing = math.sin(2 * math.pi * (cycles(t) + float(phase(t)) / 360.0))
+        return 0.0, 0.0, float(angle(t)) * _amount(effect, t) * damp * swing, 1.0
+
+    return at
+
+
+def _bounce_motion(effect, ctx):
+    g = lambda name, default: _at(effect, name, default)
+    height, squash, decay, phase = g("height", 120.0), g("squash", 15.0), g("decay", 0.0), g("phase", 0.0)
+    cycles, secs = _cycles(effect, "frequency", 2.0, ctx), _seconds_in(effect, ctx)
+
+    def at(t):
+        a = _amount(effect, t) * math.exp(-max(0.0, float(decay(t))) * secs(t))
+        u = cycles(t) + float(phase(t)) / 360.0
+        u -= math.floor(u)
+        hop = 4.0 * u * (1.0 - u)                     # 0 on the ground, 1 at the top
+        q = float(squash(t)) / 100.0 * a * max(0.0, 1.0 - hop * 3.0) ** 2
+        return 0.0, -float(height(t)) * a * hop, 0.0, 1.0 + q, 1.0 - q
+
+    return at
+
+
+def _squash_motion(effect, ctx):
+    g = lambda name, default: _at(effect, name, default)
+    size, decay, kind = g("size", 10.0), g("decay", 0.0), g("wave", "sine")
+    cycles, secs = _cycles(effect, "frequency", 2.0, ctx), _seconds_in(effect, ctx)
+
+    def at(t):
+        a = _amount(effect, t) * math.exp(-max(0.0, float(decay(t))) * secs(t))
+        w = proc.wave(kind(t), cycles(t)) * float(size(t)) / 100.0 * a
+        return 0.0, 0.0, 0.0, 1.0 + w, 1.0 - w
+
+    return at
+
+
+def _clip_anim_motion(effect, ctx):
+    """A clip's own in and out animations, like a title's (see text_animation)."""
+    W, H = ctx["width"], ctx["height"]
+    first, last = (int(v) for v in ctx.get("clip") or ctx.get("range") or (0, 0))
+    a_in, a_out = effect.params.get("anim_in", "pop"), effect.params.get("anim_out", "none")
+    n = max(2, int(round(float(effect.params.get("anim_time", 0.4)) * ctx["fps"])))
+    room = max(2, (last - first + 1) // (2 if a_in != "none" and a_out != "none" else 1))
+    n_in = 0 if a_in == "none" else min(n, room)
+    n_out = 0 if a_out == "none" else min(n, room)
+    dist = _at(effect, "distance", 100.0)
+
+    def at(t):
+        dx, dy, sc, op = 0.0, 0.0, 1.0, 1.0
+        d = float(dist(t)) / 100.0
+        for kind, n_, u in ((a_in, n_in, (t - first) / max(1, n_in)),
+                            (_OUT_MIRROR.get(a_out, a_out), n_out, (last - t) / max(1, n_out))):
+            if n_ and u < 1.0:
+                ddx, ddy, dsc, dop = _anim_state(kind, max(0.0, u), 1.0)
+                drop = 0.6 if kind in ("drop", "fall") else 1.0
+                dx, dy, sc, op = dx + ddx * W * d, dy + ddy * H * d * drop, sc * dsc, op * dop
+        return dx, dy, 0.0, sc, sc, op
+
+    return at
+
+
 def _strobe_level(effect, ctx):
     duty, low = _at(effect, "duty", 50.0), _at(effect, "low", 0.0)
     cycles = _cycles(effect, "frequency", 8.0, ctx)
@@ -829,6 +965,92 @@ def _apply_flicker(filters, effect, ctx):
     f.set("disable", 0 if effect.enabled else 1)
 
 
+def _hls(color):
+    """'#rrggbbaa' -> (hue in degrees, lightness 0..1, saturation 0..1)."""
+    r, g, b, _ = kf.color_rgba(color)
+    h, l, sat = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+    return h * 360.0, l, sat
+
+
+def _apply_colorize(filters, effect, ctx):
+    """Colorize: the picture's brightness painted in one colour. FFmpeg's
+    colorize takes the colour as hue, saturation and lightness."""
+    f = filters[0]
+    f.set("disable", 0 if effect.enabled else 1)
+    color, amount, keep = _at(effect, "color", "#ff7a1aff"), _at(effect, "amount", 100.0), _at(effect, "keep", 100.0)
+
+    def props(t):
+        h, l, sat = _hls(color(t))
+        a = max(0.0, min(100.0, float(amount(t)))) / 100.0
+        return {"av.hue": h, "av.saturation": sat * a, "av.lightness": l,
+                "av.mix": max(0.0, min(100.0, float(keep(t)))) / 100.0}
+
+    keyed = [effect.keyframes.get(n) for n in ("color", "amount", "keep") if effect.keyframes.get(n)]
+    if not keyed:
+        for k, v in props(None).items():
+            f.set(k, v)
+        return
+    # Hue is not linear in the colour: every frame between keyframes is set.
+    times = range(min(k[0][0] for k in keyed), max(k[-1][0] for k in keyed) + 1)
+    values = {t: props(t) for t in times}
+    for k in ("av.hue", "av.saturation", "av.lightness", "av.mix"):
+        f.set(k, kf.sampled_to_mlt(times, lambda t: f"{values[t][k]:.5g}"))
+
+
+def _random_hue(effect, ctx):
+    """fn(frame) -> hue shift in degrees of Random Color: a new random hue
+    ``rate`` times a second, jumping or gliding to it."""
+    g = lambda name, default: _at(effect, name, default)
+    spread, seed, smooth = g("range", 180.0), g("seed", 0), g("smooth", False)
+    cycles = _cycles(effect, "rate", 4.0, ctx)
+
+    def at(t):
+        s_, u = int(seed(t)) * 4 + 3, cycles(t)
+        v = proc.noise(s_, u) if smooth(t) else proc.noise(s_, math.floor(u))
+        return v * max(0.0, min(180.0, float(spread(t))))
+
+    return at
+
+
+def _hue_cycle(effect, ctx):
+    start, turns = _at(effect, "start", 0.0), _cycles(effect, "speed", 0.5, ctx)
+    return lambda t: (float(start(t)) + 360.0 * turns(t) + 180.0) % 360.0 - 180.0
+
+
+def _hue_applier(fn):
+    """Applier for an effect that turns the hue every frame (avfilter.hue)."""
+    def apply(filters, effect, ctx):
+        f = filters[0]
+        at = fn(effect, ctx)
+        f.set("av.h", _steps(((t, at(t)) for t in _frames(ctx)), lambda v: f"{v:.3f}"))
+        sat = effect.keyframes.get("saturation")
+        f.set("av.s", kf.to_mlt(sat, lambda v: f"{max(0.0, v) / 100:.4f}")
+              if sat else max(0.0, float(effect.params.get("saturation", 100.0))) / 100.0)
+        f.set("disable", 0 if effect.enabled else 1)
+    return apply
+
+
+def _hue_preview(fn):
+    return lambda e, ctx: [("Hue", lambda t, at=fn(e, ctx): at(t))]
+
+
+def _apply_pixelate(filters, effect, ctx):
+    f = filters[0]
+    f.set("disable", 0 if effect.enabled else 1)
+    kfs = effect.keyframes.get("size")
+    fmt = lambda v: str(max(1, min(1024, int(round(float(v))))))
+    size = kf.to_mlt(kfs, fmt) if kfs else fmt(effect.params.get("size", 16))
+    f.set("av.w", size)
+    f.set("av.h", size)
+    f.set("av.m", effect.value("mode", segment_of(ctx)[0], "avg"))
+
+
+def _ff_color(v):
+    """'#rrggbbaa' -> FFmpeg's 0xRRGGBB."""
+    r, g, b, _ = kf.color_rgba(v)
+    return f"0x{r:02X}{g:02X}{b:02X}"
+
+
 def _db_to_linear(v):
     return 10 ** (float(v) / 20.0)
 
@@ -857,6 +1079,7 @@ _reg(
         F("scale_w", "Scale Width", 100.0, 0.0, 1000.0, unit="%"),
         Param("uniform", "Uniform Scale", "bool", True, key=False),   # links the two scale rows
         F("rotation", "Rotation", 0.0, -3600.0, 3600.0, unit="°"),
+        Param("anchor", "Anchor Point", "point", None, unit="px"),
     ], static=dict(_MOTION_STATIC), intrinsic=True, stage=2, custom=_apply_motion),
     EffectDef("opacity", "Opacity", "Fixed", "video", ["brightness", "cairoblend_mode"], [
         F("opacity", "Opacity", 100.0, 0.0, 100.0, unit="%"),
@@ -903,6 +1126,11 @@ _reg(EffectDef("text", "Text", "Generate", "video", ["qtext", "qtblend", "qtblen
 
 # -- video: animate -------------------------------------------------------
 _AMOUNT = lambda: F("amount", "Amount", 100.0, 0.0, 400.0, unit="%")
+
+
+def _PIVOT(fx=0.5, fy=0.5):
+    """The point a generated motion turns and scales the picture about."""
+    return Param("pivot", "Pivot Point", "point", None, unit="px", frac=(fx, fy))
 _PAN_EASES = [("linear", "Linear"), ("ease", "Ease In/Out"), ("ease_in", "Ease In"), ("ease_out", "Ease Out"),
               ("sine", "Sine In/Out"), ("expo_out", "Expo Out"), ("back_out", "Overshoot")]
 
@@ -934,10 +1162,12 @@ _reg(
         F("rotation", "Rotation", 0.0, -360.0, 360.0, unit="°"),
         F("scale", "Scale", 0.0, -100.0, 400.0, unit="%"),
         B("circular", "Circular Motion", False),
+        _PIVOT(),
     ]),
     _generated("spin", "Spin", _spin_motion, [
         F("speed", "Speed", 0.5, -20.0, 20.0, unit="rev/s", step=0.05, digits=2),
         F("start", "Start Angle", 0.0, -360.0, 360.0, unit="°"),
+        _PIVOT(),
     ]),
     _generated("pulse", "Pulse", _pulse_motion, [
         _AMOUNT(),
@@ -945,6 +1175,38 @@ _reg(
         F("size", "Size", 10.0, -90.0, 300.0, unit="%"),
         F("sharpness", "Sharpness", 6.0, 0.5, 30.0, step=0.5),
         F("offset", "Beat Offset", 0.0, 0.0, 100.0, unit="%"),
+        _PIVOT(),
+    ]),
+    _generated("swing", "Swing", _swing_motion, [
+        _AMOUNT(),
+        F("angle", "Angle", 15.0, -180.0, 180.0, unit="°"),
+        F("frequency", "Frequency", 1.0, 0.01, 30.0, unit="Hz", step=0.05, digits=2),
+        F("phase", "Phase", 0.0, -360.0, 360.0, unit="°"),
+        F("decay", "Settle", 0.0, 0.0, 10.0, unit="/s", step=0.1, digits=2),
+        _PIVOT(0.5, 0.0),
+    ]),
+    _generated("bounce", "Bounce", _bounce_motion, [
+        _AMOUNT(),
+        F("height", "Height", 120.0, -2000.0, 2000.0, unit="px"),
+        F("frequency", "Bounces", 2.0, 0.01, 30.0, unit="/s", step=0.05, digits=2),
+        F("squash", "Squash", 15.0, 0.0, 90.0, unit="%"),
+        F("decay", "Settle", 0.0, 0.0, 10.0, unit="/s", step=0.1, digits=2),
+        F("phase", "Phase", 0.0, -360.0, 360.0, unit="°"),
+        _PIVOT(0.5, 1.0),
+    ]),
+    _generated("squash", "Squash & Stretch", _squash_motion, [
+        _AMOUNT(),
+        CH("wave", "Wave", proc.WAVES),
+        F("size", "Stretch", 10.0, -90.0, 90.0, unit="%"),
+        F("frequency", "Frequency", 2.0, 0.01, 30.0, unit="Hz", step=0.05, digits=2),
+        F("decay", "Settle", 0.0, 0.0, 10.0, unit="/s", step=0.1, digits=2),
+        _PIVOT(0.5, 1.0),
+    ]),
+    _generated("clip_anim", "Animate In / Out", _clip_anim_motion, [
+        *_still(CH("anim_in", "Animate In", TEXT_ANIMS_OUT, "pop"),
+                CH("anim_out", "Animate Out", TEXT_ANIMS_OUT, "none"),
+                F("anim_time", "Animation Time", 0.4, 0.04, 10.0, unit="s", step=0.02, digits=2)),
+        F("distance", "Slide Distance", 100.0, 0.0, 300.0, unit="%"),
     ]),
     _generated("pan_zoom", "Pan & Zoom", _pan_zoom_motion, [
         F("start_scale", "Start Scale", 100.0, 1.0, 1000.0, unit="%"),
@@ -1075,6 +1337,49 @@ _reg(
         CH("interp", "Interpolation", [("tetrahedral", "Tetrahedral"), ("trilinear", "Trilinear"),
                                        ("nearest", "Nearest")], mlt_name="av.interp"),
     ]),
+    EffectDef("colorize", "Colorize", "Color", "video", ["avfilter.colorize"], [
+        C("color", "Colour", "#ff7a1aff"),
+        F("amount", "Amount", 100.0, 0.0, 100.0, unit="%"),
+        F("keep", "Keep Brightness", 100.0, 0.0, 100.0, unit="%"),
+    ], custom=_apply_colorize),
+    EffectDef("random_color", "Random Color", "Color", "video", ["avfilter.hue"], [
+        F("rate", "Changes", 4.0, 0.1, 30.0, unit="/s", step=0.1),
+        F("range", "Hue Range", 180.0, 0.0, 180.0, unit="°"),
+        B("smooth", "Glide Between Colours", False),
+        F("saturation", "Saturation", 100.0, 0.0, 300.0, unit="%"),
+        I("seed", "Random Seed", 0, 0, 999),
+    ], custom=_hue_applier(_random_hue), baked=True, preview=_hue_preview(_random_hue)),
+    EffectDef("hue_cycle", "Hue Cycle", "Color", "video", ["avfilter.hue"], [
+        F("speed", "Speed", 0.5, -20.0, 20.0, unit="rev/s", step=0.05, digits=2),
+        F("start", "Start Hue", 0.0, -180.0, 180.0, unit="°"),
+        F("saturation", "Saturation", 100.0, 0.0, 300.0, unit="%"),
+    ], custom=_hue_applier(_hue_cycle), baked=True, preview=_hue_preview(_hue_cycle)),
+    EffectDef("color_pass", "Color Pass", "Color", "video", ["avfilter.colorhold"], [
+        Param("color", "Keep Colour", "color", "#d02020ff", mlt="av.color", conv=_ff_color, anim="hold"),
+        F("similarity", "Tolerance", 25.0, 1.0, 100.0, "av.similarity", mul=0.01, unit="%"),
+        F("blend", "Softness", 10.0, 0.0, 100.0, "av.blend", mul=0.01, unit="%"),
+    ]),
+    EffectDef("channel_mixer", "Channel Mixer", "Color", "video", ["avfilter.colorchannelmixer"], [
+        F("rr", "Red from Red", 100.0, -200.0, 200.0, "av.rr", mul=0.01, unit="%"),
+        F("rg", "Red from Green", 0.0, -200.0, 200.0, "av.rg", mul=0.01, unit="%"),
+        F("rb", "Red from Blue", 0.0, -200.0, 200.0, "av.rb", mul=0.01, unit="%"),
+        F("gr", "Green from Red", 0.0, -200.0, 200.0, "av.gr", mul=0.01, unit="%"),
+        F("gg", "Green from Green", 100.0, -200.0, 200.0, "av.gg", mul=0.01, unit="%"),
+        F("gb", "Green from Blue", 0.0, -200.0, 200.0, "av.gb", mul=0.01, unit="%"),
+        F("br", "Blue from Red", 0.0, -200.0, 200.0, "av.br", mul=0.01, unit="%"),
+        F("bg", "Blue from Green", 0.0, -200.0, 200.0, "av.bg", mul=0.01, unit="%"),
+        F("bb", "Blue from Blue", 100.0, -200.0, 200.0, "av.bb", mul=0.01, unit="%"),
+        CH("preserve", "Preserve", [("none", "Nothing"), ("lum", "Luminance"), ("max", "Maximum"),
+                                    ("avg", "Average"), ("nrm", "Norm")], mlt_name="av.pc"),
+        F("preserve_amount", "Preserve Amount", 0.0, 0.0, 100.0, "av.pa", mul=0.01, unit="%"),
+    ]),
+    EffectDef("false_color", "False Colour", "Color", "video", ["avfilter.pseudocolor"], [
+        CH("preset", "Palette", [("turbo", "Turbo"), ("heat", "Heat"), ("fiery", "Fiery"), ("cool", "Cool"),
+                                 ("spectral", "Spectral"), ("magma", "Magma"), ("inferno", "Inferno"),
+                                 ("plasma", "Plasma"), ("viridis", "Viridis"), ("helix", "Helix"),
+                                 ("blues", "Blues"), ("solar", "Solar")], mlt_name="av.p"),
+        F("opacity", "Amount", 100.0, 0.0, 100.0, "av.opacity", mul=0.01, unit="%"),
+    ]),
     EffectDef("black_white", "Black & White", "Color", "video", ["greyscale"], []),
     EffectDef("invert", "Invert", "Color", "video", ["invert"], []),
     EffectDef("sepia", "Sepia", "Color", "video", ["sepia"], [
@@ -1111,6 +1416,14 @@ _reg(
         F("bottom", "Bottom", 0.0, 0.0, 100.0, unit="%"),
         F("roundness", "Corner Roundness", 0.0, 0.0, 100.0, unit="%"),
     ], custom=_apply_crop),
+    EffectDef("skew", "Skew", "Transform", "video", ["avfilter.shear"], [
+        F("x", "Horizontal", 0.0, -200.0, 200.0, "av.shx", mul=0.01, unit="%"),
+        F("y", "Vertical", 0.0, -200.0, 200.0, "av.shy", mul=0.01, unit="%"),
+    ], static={"av.c": "black@0"}),
+    EffectDef("letterbox", "Letterbox", "Transform", "video", ["frei0r.letterb0xed"], [
+        F("size", "Bar Size", 40.0, 0.0, 100.0, "0", mul=0.01, unit="%"),
+        B("clear", "Transparent Bars", False, "1"),
+    ]),
     EffectDef("flip_h", "Horizontal Flip", "Transform", "video", ["avfilter.hflip"], []),
     EffectDef("flip_v", "Vertical Flip", "Transform", "video", ["avfilter.vflip"], []),
     EffectDef("mirror", "Mirror", "Distort", "video", ["mirror"], [
@@ -1180,6 +1493,23 @@ _reg(
         F("w", "Block Width", 2.0, 0.1, 50.0, "0", mul=0.01, unit="%"),
         F("h", "Block Height", 3.5, 0.1, 50.0, "1", mul=0.01, unit="%"),
     ]),
+    EffectDef("pixelate", "Pixelate", "Stylize", "video", ["avfilter.pixelize"], [
+        I("size", "Pixel Size", 16, 1, 512, unit="px"),
+        CH("mode", "Colour of a Block", [("avg", "Average"), ("min", "Darkest"), ("max", "Brightest")]),
+    ], custom=_apply_pixelate),
+    EffectDef("halftone", "Halftone", "Stylize", "video", ["frei0r.colorhalftone"], [
+        F("radius", "Dot Size", 40.0, 0.0, 100.0, "0", mul=0.01, unit="%"),
+        F("cyan", "Cyan Angle", 30.0, 0.0, 100.0, "1", mul=0.01, unit="%"),
+        F("magenta", "Magenta Angle", 45.0, 0.0, 100.0, "2", mul=0.01, unit="%"),
+        F("yellow", "Yellow Angle", 25.0, 0.0, 100.0, "3", mul=0.01, unit="%"),
+    ]),
+    EffectDef("kaleidoscope", "Kaleidoscope", "Stylize", "video", ["frei0r.kaleid0sc0pe"], [
+        I("segments", "Segments", 16, 1, 128, "2", anim="bake"),
+        F("x", "Centre X", 50.0, 0.0, 100.0, "0", mul=0.01, unit="%"),
+        F("y", "Centre Y", 50.0, 0.0, 100.0, "1", mul=0.01, unit="%"),
+        B("reflect", "Reflect Edges", True, "6"),
+    ]),
+    EffectDef("scanlines", "Scanlines", "Stylize", "video", ["frei0r.scanline0r"], []),
     EffectDef("threshold", "Threshold", "Stylize", "video", ["threshold"], [
         I("midpoint", "Level", 128, 0, 255, "midpoint", anim="bake"),
         B("invert", "Invert", False, "invert"),
@@ -1302,6 +1632,28 @@ _reg(
     EffectDef("tremolo", "Tremolo", "Time & Pitch", "audio", ["avfilter.tremolo"], [
         F("rate", "Rate", 5.0, 0.1, 20.0, "av.f", unit="Hz", step=0.1, anim="hold"),
         F("depth", "Depth", 50.0, 0.0, 100.0, "av.d", mul=0.01, unit="%", anim="hold"),
+    ]),
+    EffectDef("flanger", "Flanger", "Time & Pitch", "audio", ["avfilter.flanger"], [
+        F("delay", "Delay", 0.0, 0.0, 30.0, "av.delay", unit="ms", anim="hold"),
+        F("depth", "Depth", 2.0, 0.0, 10.0, "av.depth", unit="ms", step=0.1, anim="hold"),
+        F("regen", "Feedback", 0.0, -95.0, 95.0, "av.regen", unit="%", anim="hold"),
+        F("width", "Mix", 71.0, 0.0, 100.0, "av.width", unit="%", anim="hold"),
+        F("speed", "Speed", 0.5, 0.1, 10.0, "av.speed", unit="Hz", step=0.1, anim="hold"),
+    ]),
+    EffectDef("phaser", "Phaser", "Time & Pitch", "audio", ["avfilter.aphaser"], [
+        F("delay", "Delay", 3.0, 0.0, 5.0, "av.delay", unit="ms", step=0.1, anim="hold"),
+        F("decay", "Feedback", 40.0, 0.0, 99.0, "av.decay", mul=0.01, unit="%", anim="hold"),
+        F("speed", "Speed", 0.5, 0.1, 2.0, "av.speed", unit="Hz", step=0.05, digits=2, anim="hold"),
+        CH("type", "Shape", [("t", "Triangle"), ("s", "Sine")], mlt_name="av.type"),
+    ], static={"av.in_gain": 0.4, "av.out_gain": 0.74}),
+    EffectDef("vibrato", "Vibrato", "Time & Pitch", "audio", ["avfilter.vibrato"], [
+        F("rate", "Rate", 5.0, 0.1, 20.0, "av.f", unit="Hz", step=0.1, anim="hold"),
+        F("depth", "Depth", 50.0, 0.0, 100.0, "av.d", mul=0.01, unit="%", anim="hold"),
+    ]),
+    EffectDef("bitcrush", "Bitcrusher", "Dynamics", "audio", ["avfilter.acrusher"], [
+        F("bits", "Bits", 8.0, 1.0, 32.0, "av.bits", step=0.5),
+        F("samples", "Sample Reduction", 1.0, 1.0, 250.0, "av.samples"),
+        F("mix", "Mix", 50.0, 0.0, 100.0, "av.mix", mul=0.01, unit="%"),
     ]),
     EffectDef("stereo_widen", "Stereo Widener", "Stereo", "audio", ["avfilter.stereowiden"], [
         F("delay", "Delay", 20.0, 1.0, 100.0, "av.delay", unit="ms", anim="hold"),

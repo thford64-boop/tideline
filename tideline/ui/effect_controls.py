@@ -11,7 +11,7 @@ from ..engine.effects import EFFECTS, TRANSITIONS
 from .curve_editor import CurveEditor
 from .grading_widgets import ColourWheel, HueCurveEditor, QualifierView
 from .graph import KeyframeGraph, MotionPreview
-from .widgets import (DragNumber, icon_button, label, open_files, parse_rgba, popup_menu, rgba_to_hex,
+from .widgets import (DragNumber, ask_text, icon_button, label, open_files, parse_rgba, popup_menu, rgba_to_hex,
                       set_button_icon, spacer)
 
 ALIGNMENTS = [("center", "Centre at Cut"), ("start", "Start at Cut"), ("end", "End at Cut")]
@@ -20,8 +20,9 @@ HEADINGS = {("text", "anim_in"): "Animation", ("secondary", "use_hue"): "Qualifi
             ("secondary", "hue_shift"): "Correction", ("wheels", "contrast"): "Contrast & Saturation"}
 
 
-def interp_menu():
-    """Menu of keyframe curves; the common ones first, the rest in submenus."""
+def interp_menu(app=None):
+    """Menu of keyframe curves; the common ones first, the rest in submenus,
+    then the graph presets (built in and the user's own)."""
     menu, top, more = Gio.Menu(), Gio.Menu(), Gio.Menu()
     for title, items in kf.INTERP_GROUPS:
         target = top
@@ -32,7 +33,40 @@ def interp_menu():
             target.append(text, f"ec.interp('{key}')")
     menu.append_section(None, top)
     menu.append_section(None, more)
+    presets_menu = Gio.Menu()
+    for i, (name, _) in enumerate(kf.CURVE_PRESETS):
+        presets_menu.append(name, f"ec.curve('b{i}')")
+    saved = saved_curves(app)
+    if saved:
+        mine = Gio.Menu()
+        for i, item in enumerate(saved):
+            mine.append(item["name"], f"ec.curve('u{i}')")
+        presets_menu.append_section("Saved", mine)
+    graphs = Gio.Menu()
+    graphs.append_submenu("Graph Presets", presets_menu)
+    graphs.append("Save Curve as Preset…", "ec.save_curve")
+    if saved:
+        forget = Gio.Menu()
+        for i, item in enumerate(saved):
+            forget.append(item["name"], f"ec.forget_curve('{i}')")
+        graphs.append_submenu("Remove Saved Curve", forget)
+    menu.append_section(None, graphs)
     return menu
+
+
+def saved_curves(app):
+    """The user's saved graph presets: [{"name", "curve": [x1, y1, x2, y2]}]."""
+    if app is None:
+        return []
+    out = []
+    for item in app.prefs["curve_presets"] or []:
+        try:
+            curve = [float(v) for v in item["curve"]]
+            if len(curve) == 4 and str(item["name"]):
+                out.append({"name": str(item["name"]), "curve": curve})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
 
 
 class ParamRow:
@@ -209,7 +243,7 @@ class ParamRow:
 
     def _interp_menu(self, gesture, n, x, y):
         self.panel.interp_target, self.panel.interp_time = self, None
-        popup_menu(self.kf_button, interp_menu(), x, y)
+        popup_menu(self.kf_button, interp_menu(self.app), x, y)
 
     # -- refresh ---------------------------------------------------------
     def refresh(self):
@@ -285,6 +319,13 @@ class EffectControls(Gtk.Box):
         interp = Gio.SimpleAction.new("interp", GLib.VariantType.new("s"))
         interp.connect("activate", self._set_interp)
         group.add_action(interp)
+        for name, fn in (("curve", self._set_curve), ("forget_curve", self._forget_curve)):
+            action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
+            action.connect("activate", fn)
+            group.add_action(action)
+        save_curve = Gio.SimpleAction.new("save_curve", None)
+        save_curve.connect("activate", self._save_curve)
+        group.add_action(save_curve)
         for name, fn in (("kf_delete", self._kf_delete), ("kf_add", self._kf_add)):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", fn)
@@ -318,6 +359,51 @@ class EffectControls(Gtk.Box):
         row = self.interp_target
         if row is not None:
             self.app.set_interp(row.clip, row.effect, row.pdef, param.get_string(), self.interp_time)
+
+    def _set_curve(self, action, param):
+        """Give the keyframe's segment a graph preset's curve."""
+        row, which = self.interp_target, param.get_string()
+        if row is None:
+            return
+        try:
+            if which.startswith("u"):
+                curve = saved_curves(self.app)[int(which[1:])]["curve"]
+            else:
+                curve = kf.CURVE_PRESETS[int(which[1:])][1]
+        except (IndexError, ValueError):
+            return
+        self.app.set_interp(row.clip, row.effect, row.pdef, "bezier", self.interp_time, curve=curve)
+
+    def _save_curve(self, *_):
+        """Keep the curve leaving the keyframe as a graph preset of one's own."""
+        row = self.interp_target
+        if row is None:
+            return
+        t = self.app.clip_time(row.clip) if self.interp_time is None else self.interp_time
+        kfs = row.effect.keyframes.get(row.pdef.name) or []
+        i = kf.find(kfs, t)
+        if i < 0:
+            return self.app.status("Put the playhead on a keyframe to save its curve.", warn=True)
+        curve = [round(v, 4) for v in kf.curve_of(kfs[i])]
+
+        def save(name):
+            saved = [c for c in saved_curves(self.app) if c["name"] != name]
+            self.app.prefs["curve_presets"] = saved + [{"name": name, "curve": curve}]
+            self.app.prefs.save()
+            self.app.status(f"Saved the curve as “{name}” in Graph Presets")
+
+        ask_text(self.app.window, "Save Curve as Preset", "Name of the graph preset:",
+                 f"Curve {len(saved_curves(self.app)) + 1}", save)
+
+    def _forget_curve(self, action, param):
+        saved = saved_curves(self.app)
+        try:
+            gone = saved.pop(int(param.get_string()))
+        except (IndexError, ValueError):
+            return
+        self.app.prefs["curve_presets"] = saved
+        self.app.prefs.save()
+        self.app.status(f"Removed the graph preset “{gone['name']}”")
 
     def _kf_delete(self, *_):
         row = self.interp_target

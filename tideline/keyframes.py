@@ -22,6 +22,7 @@ INTERP_GROUPS = [
     ("Ease", [("ease_in", "Ease In"), ("ease_out", "Ease Out"), ("ease", "Ease In/Out")]),
     ("Sine", [("sine_in", "Sine In"), ("sine_out", "Sine Out"), ("sine", "Sine In/Out")]),
     ("Expo", [("expo_in", "Expo In"), ("expo_out", "Expo Out"), ("expo", "Expo In/Out")]),
+    ("Circ", [("circ_in", "Circ In"), ("circ_out", "Circ Out"), ("circ", "Circ In/Out")]),
     ("Overshoot", [("back_in", "Back In"), ("back_out", "Back Out"), ("back", "Back In/Out")]),
     ("Elastic", [("elastic_in", "Elastic In"), ("elastic_out", "Elastic Out")]),
     ("Bounce", [("bounce_in", "Bounce In"), ("bounce_out", "Bounce Out")]),
@@ -37,8 +38,26 @@ BEZIER_PRESETS = {
     "expo_in": [0.7, 0.0, 0.84, 0.0], "expo_out": [0.16, 1.0, 0.3, 1.0], "expo": [0.87, 0.0, 0.13, 1.0],
     "back_in": [0.36, 0.0, 0.66, -0.56], "back_out": [0.34, 1.56, 0.64, 1.0],
     "back": [0.68, -0.6, 0.32, 1.6],
+    "circ_in": [0.55, 0.0, 1.0, 0.45], "circ_out": [0.0, 0.55, 0.45, 1.0], "circ": [0.85, 0.0, 0.15, 1.0],
 }
 DEFAULT_BEZIER = [0.33, 0.0, 0.67, 1.0]
+
+# Graph presets: ready-made custom curves for a keyframe's segment. The
+# user's own (saved from a keyframe's curve) live in the settings.
+CURVE_PRESETS = [
+    ("Smooth", [0.25, 0.1, 0.25, 1.0]),
+    ("Gentle", [0.45, 0.0, 0.55, 1.0]),
+    ("Snappy", [0.2, 0.9, 0.1, 1.0]),
+    ("Whip", [0.9, 0.0, 0.1, 1.0]),
+    ("Accelerate", [0.4, 0.0, 1.0, 1.0]),
+    ("Decelerate", [0.0, 0.0, 0.2, 1.0]),
+    ("Standard Motion", [0.4, 0.0, 0.2, 1.0]),
+    ("Anticipate", [0.6, -0.28, 0.74, 0.05]),
+    ("Anticipate & Overshoot", [0.68, -0.55, 0.27, 1.55]),
+    ("Soft Overshoot", [0.34, 1.3, 0.64, 1.0]),
+    ("Big Overshoot", [0.18, 1.9, 0.6, 1.0]),
+    ("Slow Middle", [0.1, 0.7, 0.9, 0.3]),
+]
 
 
 def _bounce_out(u):
@@ -76,6 +95,10 @@ _EASINGS = {
     "expo_in": _expo_in,
     "expo_out": lambda u: 1 - _expo_in(1 - u),
     "expo": lambda u: _expo_in(2 * u) / 2 if u < 0.5 else 1 - _expo_in(2 - 2 * u) / 2,
+    "circ_in": lambda u: 1 - math.sqrt(max(0.0, 1 - u * u)),
+    "circ_out": lambda u: math.sqrt(max(0.0, 1 - (u - 1) ** 2)),
+    "circ": lambda u: (1 - math.sqrt(max(0.0, 1 - (2 * u) ** 2))) / 2 if u < 0.5
+    else (math.sqrt(max(0.0, 1 - (2 - 2 * u) ** 2)) + 1) / 2,
     "back_in": lambda u: (_B1 + 1) * u ** 3 - _B1 * u * u,
     "back_out": lambda u: 1 + (_B1 + 1) * (u - 1) ** 3 + _B1 * (u - 1) ** 2,
     "back": lambda u: ((2 * u) ** 2 * ((_B2 + 1) * 2 * u - _B2)) / 2 if u < 0.5

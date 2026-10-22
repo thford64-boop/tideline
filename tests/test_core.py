@@ -69,6 +69,19 @@ class Keyframes(unittest.TestCase):
         self.assertEqual(kf.evaluate(k, 99), 50.0)
         self.assertEqual(kf.evaluate([[0, [0, 0], "linear"], [10, [10, 20], "linear"]], 5), [5, 10])
 
+    def test_graph_presets_and_circ(self):
+        for name, curve in kf.CURVE_PRESETS:
+            self.assertEqual(len(curve), 4, name)
+            self.assertAlmostEqual(kf.ease(0.0, "bezier", curve), 0.0, places=3)
+            self.assertAlmostEqual(kf.ease(1.0, "bezier", curve), 1.0, places=3)
+        for key in ("circ_in", "circ_out", "circ"):
+            self.assertIn(key, dict(kf.INTERPS))
+            self.assertIn(key, kf.BEZIER_PRESETS)
+            values = [kf.ease(i / 20, key) for i in range(21)]
+            self.assertEqual(values, sorted(values))
+        self.assertLess(kf.ease(0.5, "circ_in"), 0.5)
+        self.assertGreater(kf.ease(0.5, "circ_out"), 0.5)
+
     def test_ease_is_monotonic_and_hits_ends(self):
         for interp in ("ease_in", "ease_out", "ease"):
             k = [[0, 0.0, interp], [20, 1.0, "linear"]]
@@ -460,11 +473,12 @@ class EverythingKeyframes(unittest.TestCase):
         fixed = [(d.key, p.name) for d in EFFECTS.values() for p in d.params if not p.key]
         # Uniform Scale only links two rows; Frame Blending picks how the whole
         # remapped clip is drawn; RGB Curves are edited as a whole in their editor;
-        # a title's animations are themselves movement over time; and the colour
+        # a title's or clip's animations are themselves movement over time; and the colour
         # wheels, hue curves and secondary are baked into one LUT each.
         luts = [(k, p.name) for k in ("wheels", "hue_curves", "secondary") for p in EFFECTS[k].params]
         self.assertEqual(fixed, [("motion", "uniform"), ("time_remap", "blend"),
                                  ("text", "anim_in"), ("text", "anim_out"), ("text", "anim_time"),
+                                 ("clip_anim", "anim_in"), ("clip_anim", "anim_out"), ("clip_anim", "anim_time"),
                                  ("curves", "curves")] + luts)
 
     def test_segments_follow_stepped_keyframes(self):

@@ -1,0 +1,40 @@
+# Maintainer: YOUR NAME <son748263@gmail.com>
+pkgname=tideline
+pkgver=0.0.6
+pkgrel=1
+pkgdesc="Non-linear video editor built on MLT and GTK 4"
+arch=('any')
+url="https://tideline.video"
+license=('GPL-3.0-or-later')
+depends=('python' 'python-gobject' 'python-cairo' 'python-numpy' 'gtk4' 'libadwaita'
+         'mlt' 'ffmpeg' 'frei0r-plugins' 'sdl2' 'qt6-base' 'qt6-svg' 'qt6-5compat')
+optdepends=('rubberband: keep audio pitch when changing clip speed'
+            'vid.stab: MLT stabilisation plugin'
+            'rnnoise: MLT noise suppression plugin'
+            'whisper-cpp: auto captions (speech recognition)'
+            'python-openai-whisper: auto captions with OpenAI Whisper')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/thford64-boop/tideline/archive/refs/tags/$pkgver.tar.gz")
+sha256sums=('d2a47fb0e5044cb71f4ad1cc4db73b30a33a7d6c266515edf024164574b33103')
+
+package() {
+  cd "$pkgname-$pkgver"
+  local site
+  site="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+  install -d "$pkgdir$site"
+  cp -r --no-preserve=ownership tideline "$pkgdir$site/"
+  find "$pkgdir$site/tideline" -name '__pycache__' -type d -prune -exec rm -rf {} +
+  python -m compileall -q -s "$pkgdir" -p / "$pkgdir$site/tideline"
+
+  install -Dm755 packaging/tideline "$pkgdir/usr/bin/tideline"
+  install -Dm644 packaging/org.tideline.Tideline.desktop \
+    "$pkgdir/usr/share/applications/org.tideline.Tideline.desktop"
+  local icon
+  for icon in tideline/data/icons/hicolor/*/apps/*; do
+    install -Dm644 "$icon" "$pkgdir/usr/share/icons/${icon#tideline/data/icons/}"
+  done
+  install -Dm644 packaging/org.tideline.Tideline.xml \
+    "$pkgdir/usr/share/mime/packages/org.tideline.Tideline.xml"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 docs/EXTENSIONS.md "$pkgdir/usr/share/doc/$pkgname/EXTENSIONS.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

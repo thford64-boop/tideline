@@ -313,6 +313,31 @@ class Install(Base):
         with self.assertRaises(extensions.ExtensionError):
             extensions.uninstall(other)
 
+    def test_builtin_extensions_load_and_give_way_to_a_user_copy(self):
+        exts = {e.id: e for e in self.reg.load([extensions.builtin_dir()])}
+        self.assertEqual(set(exts), {"frito.cutout", "frito.deepvoice"})
+        for ext in exts.values():
+            self.assertTrue(ext.loaded, ext.error)
+            self.assertTrue(ext.builtin)
+            self.assertFalse(ext.user_installed)
+            with self.assertRaises(extensions.ExtensionError):
+                extensions.uninstall(ext)
+        labels = [c.label for c in self.reg.commands]
+        self.assertIn("Remove Background…", labels)
+        self.assertIn("Isolate Voice", labels)
+        self.assertEqual(extensions.search_dirs()[-1], extensions.builtin_dir())
+        self.reg.unload_all()
+        # A copy in the user folder (an update, say) is loaded instead, and the
+        # built-in one is not listed as a clash.
+        os.makedirs(extensions.user_dir())
+        write_ext(extensions.user_dir(), "cutout", {"id": "frito.cutout", "name": "My Cutout"})
+        loaded = self.reg.load([extensions.user_dir(), extensions.builtin_dir()])
+        self.assertEqual(sorted(e.id for e in loaded), ["frito.cutout", "frito.deepvoice"])
+        mine = self.reg.get("frito.cutout")
+        self.assertEqual(mine.name, "My Cutout")
+        self.assertTrue(mine.user_installed)
+        self.assertEqual([e.error for e in loaded], ["", ""])
+
 
 def frame(graph, pos):
     graph.tractor.seek(pos)

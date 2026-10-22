@@ -1729,15 +1729,19 @@ class App(Adw.Application):
         if target is not None:
             self.set_playhead(clip.start + (target - clip.in_point))
 
-    def set_interp(self, clip, effect, pdef, interp, t=None):
+    def set_interp(self, clip, effect, pdef, interp, t=None, curve=None):
         """Set the curve of the segment leaving the keyframe at ``t`` (default:
-        the playhead). Switching to a custom curve keeps the current shape."""
+        the playhead). Switching to a custom curve keeps the current shape,
+        unless ``curve`` (a graph preset) gives another."""
         t = self.clip_time(clip) if t is None else t
         kfs = [list(k) for k in effect.keyframes.get(pdef.name) or []]
         i = kf.find(kfs, t)
         if i < 0 or pdef.hold:
             return
-        kfs[i] = kfs[i][:2] + (["bezier", kf.curve_of(kfs[i])] if interp == "bezier" else [interp])
+        if interp == "bezier":
+            kfs[i] = kfs[i][:2] + ["bezier", [float(v) for v in curve] if curve else kf.curve_of(kfs[i])]
+        else:
+            kfs[i] = kfs[i][:2] + [interp]
         self.set_keyframes(effect, pdef, kfs, label="Keyframe Interpolation")
 
     def set_keyframes(self, effect, pdef, kfs, final=True, label="Keyframe"):
@@ -2628,7 +2632,7 @@ class App(Adw.Application):
             return
         dirs = extensions.search_dirs()
         if os.environ.get("TIDELINE_DEBUG_SCRIPT"):
-            dirs = dirs[1:]                       # test runs only see TIDELINE_EXTENSIONS_PATH
+            dirs = dirs[1:-1]                     # test runs only see TIDELINE_EXTENSIONS_PATH
         self.extensions.load(dirs, disabled=set(self.prefs["disabled_extensions"]))
         failed = [e for e in self.extensions.extensions if e.error]
         if failed:

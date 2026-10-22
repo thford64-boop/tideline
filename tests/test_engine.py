@@ -270,6 +270,76 @@ class Graphs(Base):
         self.assertColor(px(frame(g, 89), 20), GREEN)       # ends exactly on the clip's last frame
         self.assertTrue(pulse.id not in g.filters)
 
+    def test_anchor_point_turns_and_scales_the_picture_about_it(self):
+        c, _ = self.animated("invert")
+        c.effects.pop()
+        m = c.effect("motion")
+        m.params.update(anchor=[0.0, 0.0], position=[0.0, 0.0], rotation=45.0)
+        img = frame(self.build(), 5)
+        self.assertColor(px(img, 200, 250), GREEN)               # turned clockwise about the top-left corner
+        self.assertColor(px(img, 300, 50), BLUE)
+        m.params.update(anchor=[W, H], position=[W, H], rotation=0.0, scale=50.0)
+        img = frame(self.build(), 5)
+        self.assertColor(px(img, W - 20, H - 20), GREEN)         # shrunk into the bottom-right corner
+        self.assertColor(px(img, W // 2 - 20, H // 2 - 20), BLUE)
+        m.keyframes["rotation"] = [[0, 0.0, "linear"], [30, 90.0, "linear"]]
+        m.params.update(scale=100.0, anchor=[0.0, 0.0], position=[0.0, 0.0])
+        img = frame(self.build(), 30)
+        self.assertColor(px(img, 100, 100), BLUE)                # a quarter turn about the corner: off to the left
+        self.assertColor(px(img, 20, 20), BLUE)
+
+    def test_swing_bounce_and_squash_hold_their_pivot(self):
+        c, swing = self.animated("swing", angle=40.0, phase=90.0, frequency=0.01)
+        g = self.build()
+        img = frame(g, 0)
+        self.assertColor(px(img, 310, 8), GREEN)                 # hinged at the top centre
+        self.assertColor(px(img, 20, 20), GREEN)                 # the left side swung up over the corner
+        self.assertColor(px(img, 600, 20), BLUE)                 # the right side swung down out of it
+        swing.params["pivot"] = [W / 2, H / 2]
+        self.assertTrue(g.update_effect(swing))
+        self.assertColor(px(frame(g, 0), 20, 20), BLUE)          # about the centre both top corners move
+        c.effects[-1] = Effect("bounce", params={"height": 100.0, "frequency": 1.0, "squash": 0.0})
+        g = self.build()
+        self.assertColor(px(frame(g, 15), 320, H - 20), BLUE)    # mid-hop: lifted off the bottom
+        self.assertColor(px(frame(g, 0), 320, H - 20), GREEN)
+        c.effects[-1] = Effect("squash", params={"size": 40.0, "frequency": 1.0, "wave": "square"})
+        g = self.build()
+        img = frame(g, 5)                                        # wider and shorter, standing on the bottom
+        self.assertColor(px(img, 320, 40), BLUE)
+        self.assertColor(px(img, 320, H - 10), GREEN)
+
+    def test_animate_in_out(self):
+        c, anim = self.animated("clip_anim", anim_in="fade", anim_out="slide_left", anim_time=0.5)
+        g = self.build()
+        levels = [px(frame(g, t))[1] for t in (0, 4, 8, 15)]
+        self.assertEqual(levels, sorted(levels))
+        self.assertLess(levels[0], 20)
+        self.assertColor(px(frame(g, 15)), GREEN)
+        self.assertColor(px(frame(g, 85), 600), BLUE)           # sliding away to the left, fading
+        left = px(frame(g, 85), 20)
+        self.assertGreater(left[1], left[2] + 20)
+
+    def test_new_colour_and_stylize_effects(self):
+        c, colorize = self.animated("colorize")
+        colorize.keyframes = {"color": [[0, "#ff0000ff", "linear"], [30, "#0000ffff", "linear"]]}
+        g = self.build()
+        mid = px(frame(g, 15))
+        self.assertGreater(min(mid[0], mid[2]) - mid[1], 60)    # red to blue passes through purple, not green
+        c.effects[-1] = Effect("color_pass", keyframes={"color": [[0, "#00c000ff", "hold"],
+                                                                  [30, "#ff0000ff", "hold"]]})
+        g = self.build()
+        self.assertColor(px(frame(g, 5)), GREEN)                 # green kept
+        grey = px(frame(g, 40))
+        self.assertLess(grey.max() - grey.min(), 6)              # then only red is: green turns grey
+        c.effects[-1] = Effect("hue_cycle", params={"speed": 1.0})
+        g = self.build()
+        hues = [tuple(np.round(px(frame(g, t)) / 40)) for t in (0, 10, 20)]
+        self.assertEqual(len(set(hues)), 3)
+        c.effects[-1] = Effect("random_color", params={"rate": 3.0})
+        g = self.build()
+        self.assertGreater(len({tuple(np.round(px(frame(g, t)) / 40)) for t in range(0, 90, 10)}), 2)
+        self.assertEqual(px(frame(g, 25)).tolist(), px(frame(g, 25)).tolist())   # the same every time
+
     def test_strobe_and_flicker(self):
         c, strobe = self.animated("strobe", frequency=5.0)
         g = self.build()

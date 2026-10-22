@@ -1,0 +1,9 @@
+{
+  "id": "frito.deepvoice",
+  "name": "DeepVoice",
+  "version": "1.0.0",
+  "author": "Christian Ford",
+  "description": "Isolate a voice from any clip (or remove it) with a Demucs AI model that runs locally on your computer.",
+  "tideline": "0.0.5",
+  "main": "main.py"
+}

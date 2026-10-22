@@ -56,10 +56,17 @@ def data_dir(ext_id):
     return os.path.join(base, "tideline", "extension-data", ext_id)
 
 
+def builtin_dir():
+    """Extensions that ship with Tideline (DeepVoice, Cutout)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "extensions")
+
+
 def search_dirs():
+    """Where extensions are looked for, in order: a copy installed in the
+    user folder replaces a built-in one with the same id."""
     dirs = [user_dir()]
     dirs += [d for d in os.environ.get("TIDELINE_EXTENSIONS_PATH", "").split(os.pathsep) if d]
-    return dirs
+    return dirs + [builtin_dir()]
 
 
 def _version_tuple(text):
@@ -89,6 +96,10 @@ class Extension:
     @property
     def user_installed(self):
         return os.path.dirname(os.path.abspath(self.path)) == os.path.abspath(user_dir())
+
+    @property
+    def builtin(self):
+        return os.path.dirname(os.path.abspath(self.path)) == os.path.abspath(builtin_dir())
 
     def summary(self):
         """"2 effects, 1 command" style description of what it added."""
@@ -468,6 +479,8 @@ class Registry:
         seen = {e.id for e in self.extensions}
         for folder, manifest, error in self.discover(dirs):
             ext = Extension(folder, manifest or {"id": os.path.basename(folder)})
+            if ext.builtin and ext.id in seen:
+                continue                          # the user installed their own copy
             self.extensions.append(ext)
             if error:
                 ext.error = error

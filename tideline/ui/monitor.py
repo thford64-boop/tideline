@@ -5,7 +5,7 @@ import math
 import cairo
 from gi.repository import Gdk, GLib, GObject, Graphene, Gsk, Gtk
 
-from ..engine.effects import EFFECTS
+from ..engine.effects import EFFECTS, motion_box
 from ..settings import DRAFT_NOTE, PREVIEW_SCALES
 from . import theme
 from .widgets import TimecodeField, icon_button, set_button_icon
@@ -360,15 +360,20 @@ class MonitorPanel(Gtk.Box):
         return (clip, motion) if motion is not None else None
 
     def _box(self, clip, motion):
-        """Clip rectangle in sequence pixels: (cx, cy, w, h, rotation)."""
+        """Clip rectangle in sequence pixels: (cx, cy, w, h, rotation), its
+        centre (cx, cy) moved off Position when the anchor point is."""
         app = self.app
         seq = app.seq
         edef = EFFECTS["motion"]
         get = lambda n: app.param_value(clip, motion, edef.param(n))
-        cx, cy = get("position")
         sh = get("scale")
         sw = sh if motion.params.get("uniform", True) else get("scale_w")
-        return cx, cy, seq.width * sw / 100.0, seq.height * sh / 100.0, get("rotation")
+        cx, cy, w, h = motion_box(get("position"), get("anchor"), sw, sh, get("rotation"), seq.width, seq.height)
+        return cx, cy, w, h, get("rotation")
+
+    def _anchor(self, clip, motion):
+        """Where the anchor point is in the frame: Motion's Position."""
+        return self.app.param_value(clip, motion, EFFECTS["motion"].param("position"))
 
     def _overlay(self, cr, x, y, w, h):
         target = self._target()
@@ -377,6 +382,7 @@ class MonitorPanel(Gtk.Box):
         seq = self.app.seq
         k = w / seq.width
         cx, cy, bw, bh, rot = self._box(*target)
+        ax, ay = self._anchor(*target)
         cr.save()
         cr.translate(x + cx * k, y + cy * k)
         cr.rotate(math.radians(rot))
@@ -388,6 +394,12 @@ class MonitorPanel(Gtk.Box):
             for sy in (-1, 1):
                 cr.rectangle(sx * bw * k / 2 - 4, sy * bh * k / 2 - 4, 8, 8)
         cr.fill()
+        cr.restore()
+        cr.save()
+        cr.translate(x + ax * k, y + ay * k)         # the anchor point
+        cr.rotate(math.radians(rot))
+        cr.set_line_width(1.2)
+        cr.set_source_rgba(*theme.rgb(theme.ACCENT, 0.95))
         cr.arc(0, 0, 4, 0, 2 * math.pi)
         cr.move_to(-8, 0)
         cr.line_to(8, 0)
@@ -430,9 +442,10 @@ class MonitorPanel(Gtk.Box):
             inside = abs(lx) <= bw / 2 and abs(ly) <= bh / 2
             if near_corner or inside:
                 clip, motion = target
+                ax, ay = self._anchor(clip, motion)
                 self._xf = {"mode": "scale" if near_corner else "move", "clip": clip, "motion": motion,
-                            "pos": [cx, cy], "scale": app.param_value(clip, motion, EFFECTS["motion"].param("scale")),
-                            "start": (sx, sy), "dist": max(1.0, math.hypot(sx - cx, sy - cy)), "moved": False}
+                            "pos": [ax, ay], "scale": app.param_value(clip, motion, EFFECTS["motion"].param("scale")),
+                            "start": (sx, sy), "dist": max(1.0, math.hypot(sx - ax, sy - ay)), "moved": False}
                 return
         # Click on the picture: select the topmost video clip under the pointer.
         for track in reversed(seq.video_tracks):
@@ -442,8 +455,11 @@ class MonitorPanel(Gtk.Box):
             m = c.effect("motion")
             if m is None:
                 continue
-            cx, cy, bw, bh, _ = self._box(c, m)
-            if abs(sx - cx) <= bw / 2 and abs(sy - cy) <= bh / 2:
+            cx, cy, bw, bh, rot = self._box(c, m)
+            r = math.radians(-rot)
+            lx = (sx - cx) * math.cos(r) - (sy - cy) * math.sin(r)
+            ly = (sx - cx) * math.sin(r) + (sy - cy) * math.cos(r)
+            if abs(lx) <= bw / 2 and abs(ly) <= bh / 2:
                 app.select([c.id], expand=False)
                 return
         app.clear_selection()

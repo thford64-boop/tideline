@@ -52,7 +52,9 @@ class ExtensionsDialog(Gtk.Window):
         known = {os.path.abspath(e.path) for e in found}
         # Folders installed since start-up show too, waiting for a restart.
         for path, manifest, error in self.app.extensions.discover():
-            if os.path.abspath(path) not in known:
+            if os.path.abspath(path) not in known and not (
+                    os.path.dirname(os.path.abspath(path)) == os.path.abspath(extensions.builtin_dir())
+                    and manifest and any(e.id == manifest.get("id") for e in found)):
                 ext = extensions.Extension(path, manifest or {"id": os.path.basename(path)})
                 ext.error = error or "installed — restart Tideline to load it"
                 ext.enabled = ext.id not in self.app.prefs["disabled_extensions"]
@@ -73,7 +75,7 @@ class ExtensionsDialog(Gtk.Window):
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
         title = ext.name + (f"  {ext.version}" if ext.version else "")
         text.append(label(title, ellipsize=True))
-        meta = ext.id + (f" · {ext.author}" if ext.author else "")
+        meta = ext.id + (f" · {ext.author}" if ext.author else "") + (" · built in" if ext.builtin else "")
         text.append(label(meta, css="faint", ellipsize=True))
         if ext.description:
             desc = label(ext.description, css="dim")
