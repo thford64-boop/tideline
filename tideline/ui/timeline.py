@@ -87,6 +87,7 @@ class TimelineView(Gtk.DrawingArea):
         for ev in ("sequence", "selection", "thumbs", "options", "marks", "project", "effects"):
             app.on(ev, self.invalidate)
         app.on("playhead", self._playhead_moved)
+        app.on("frame_cache", self.queue_draw)
         app.on("tool", self._tool_changed)
         app.on("zoom", self.zoom_by)
         app.on("view_fit", self.fit)
@@ -698,6 +699,7 @@ class TimelineView(Gtk.DrawingArea):
             cr.set_source_rgba(*theme.rgb(theme.ACCENT, 0.8))
             cr.set_line_width(1)
             cr.stroke()
+        self._draw_render_bar(cr, w)
         x = int(self.x_of(s.playhead)) + 0.5
         if x >= HEADER_W - 1:
             cr.set_source_rgba(*theme.rgb(theme.PLAYHEAD))
@@ -725,6 +727,31 @@ class TimelineView(Gtk.DrawingArea):
             cr.set_source_rgba(*theme.rgb(theme.TEXT))
             cr.move_to(bx + 5, by + 3)
             PangoCairo.show_layout(cr, layout)
+
+    def _draw_render_bar(self, cr, w):
+        """Under the ruler: green where the Program monitor's frames are
+        rendered into RAM (they play without rendering), amber where
+        Render In to Out is still working."""
+        app = self.app
+        job = app.prerender
+        runs = app.frame_cache.ranges(app.program.cache_key) if app.frame_cache.enabled else []
+        if not runs and job is None:
+            return
+        y = RULER_H - 4
+        cr.save()
+        cr.rectangle(HEADER_W, 0, w - HEADER_W, RULER_H)
+        cr.clip()
+        if job is not None:
+            cr.set_source_rgba(*theme.rgb(theme.WARN, 0.75))
+            cr.rectangle(self.x_of(job.first), y, max(1.0, self.x_of(job.last + 1) - self.x_of(job.first)), 3)
+            cr.fill()
+        cr.set_source_rgba(*theme.rgb(theme.RENDERED))
+        for a, b in runs:
+            xa, xb = self.x_of(a), self.x_of(b)
+            if xb >= HEADER_W and xa <= w:
+                cr.rectangle(xa, y, max(1.0, xb - xa), 3)
+        cr.fill()
+        cr.restore()
 
     # -- pointer ---------------------------------------------------------
     def _mods(self, gesture):

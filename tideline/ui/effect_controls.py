@@ -294,27 +294,15 @@ class ParamRow:
             self.graph.queue_draw()
 
 
-class EffectControls(Gtk.Box):
-    def __init__(self, app):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL)
-        self.app = app
-        self.rows = []
-        self.previews = []
-        self.graphs_open = set()          # (effect id, parameter) whose value graph is shown
-        self.signature = None
-        self.interp_target = None
-        self.interp_time = None           # keyframe a context menu acts on (None: at the playhead)
-        self._commit_id = 0
-        self._commit_label = ""
-        self.header = label("", css="dim", ellipsize=True)
-        self.header.set_margin_start(8)
-        self.header.set_margin_top(5)
-        self.header.set_margin_bottom(5)
-        self.append(self.header)
-        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        scroller = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
-        scroller.set_child(self.body)
-        self.append(scroller)
+class KeyframeActions:
+    """The keyframe context menu's actions ("ec.*", see interp_menu) for a
+    panel whose graphs set ``interp_target`` (a row: app, clip, effect,
+    pdef, graph) and ``interp_time`` before showing the menu."""
+
+    interp_target = None
+    interp_time = None                    # keyframe a context menu acts on (None: at the playhead)
+
+    def install_keyframe_actions(self):
         group = Gio.SimpleActionGroup()
         interp = Gio.SimpleAction.new("interp", GLib.VariantType.new("s"))
         interp.connect("activate", self._set_interp)
@@ -331,29 +319,6 @@ class EffectControls(Gtk.Box):
             action.connect("activate", fn)
             group.add_action(action)
         self.insert_action_group("ec", group)
-        for ev in ("selection", "sequence", "project"):
-            app.on(ev, self.sync)
-        for ev in ("playhead", "effects"):
-            app.on(ev, self.refresh_values)
-        app.on("picker", self._picker_changed)
-        self.sync()
-
-    def _picker_changed(self):
-        for view in self.previews:
-            if isinstance(view, QualifierView):
-                view.refresh()
-
-    def commit_later(self, label_):
-        """Coalesce a burst of live changes (slider drag, typing) into one undo step."""
-        self._commit_label = label_
-        if self._commit_id:
-            GLib.source_remove(self._commit_id)
-        self._commit_id = GLib.timeout_add(450, self._commit_now)
-
-    def _commit_now(self):
-        self._commit_id = 0
-        self.app.commit(self._commit_label, rebuild=False)
-        return False
 
     def _set_interp(self, action, param):
         row = self.interp_target
@@ -416,6 +381,53 @@ class EffectControls(Gtk.Box):
         row = self.interp_target
         if row is not None and row.graph is not None:
             row.graph.add_pending()
+
+
+class EffectControls(KeyframeActions, Gtk.Box):
+    def __init__(self, app):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        self.app = app
+        self.rows = []
+        self.previews = []
+        self.graphs_open = set()          # (effect id, parameter) whose value graph is shown
+        self.signature = None
+        self.interp_target = None
+        self.interp_time = None           # keyframe a context menu acts on (None: at the playhead)
+        self._commit_id = 0
+        self._commit_label = ""
+        self.header = label("", css="dim", ellipsize=True)
+        self.header.set_margin_start(8)
+        self.header.set_margin_top(5)
+        self.header.set_margin_bottom(5)
+        self.append(self.header)
+        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        scroller = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroller.set_child(self.body)
+        self.append(scroller)
+        self.install_keyframe_actions()
+        for ev in ("selection", "sequence", "project"):
+            app.on(ev, self.sync)
+        for ev in ("playhead", "effects"):
+            app.on(ev, self.refresh_values)
+        app.on("picker", self._picker_changed)
+        self.sync()
+
+    def _picker_changed(self):
+        for view in self.previews:
+            if isinstance(view, QualifierView):
+                view.refresh()
+
+    def commit_later(self, label_):
+        """Coalesce a burst of live changes (slider drag, typing) into one undo step."""
+        self._commit_label = label_
+        if self._commit_id:
+            GLib.source_remove(self._commit_id)
+        self._commit_id = GLib.timeout_add(450, self._commit_now)
+
+    def _commit_now(self):
+        self._commit_id = 0
+        self.app.commit(self._commit_label, rebuild=False)
+        return False
 
     def toggle_graph(self, key, show):
         if show:

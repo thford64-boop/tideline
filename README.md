@@ -32,8 +32,8 @@ manager and run `./install.sh` (into `~/.local`; `--uninstall` removes it).
 whose C library is at least as new as the build machine's:
 
 ```sh
-chmod +x Tideline-0.0.6-x86_64.AppImage
-./Tideline-0.0.6-x86_64.AppImage                 # or with a project file
+chmod +x Tideline-0.0.7-x86_64.AppImage
+./Tideline-0.0.7-x86_64.AppImage                 # or with a project file
 ```
 
 It carries Python, GTK 4, libadwaita, MLT, FFmpeg, frei0r and Qt; the graphics
@@ -65,7 +65,7 @@ solo; sequences nested inside sequences. Tools:
 | B | Ripple Edit | P | Pen (opacity / volume keyframes on the clip) |
 | N | Rolling Edit | H | Hand |
 | R | Rate Stretch | Z | Zoom |
-| C | Razor (Shift = all tracks) | T | Type (click in the Program monitor) |
+| C | Razor (Shift = all tracks) | T | Type (click in the Program monitor and type) |
 
 **Editing commands** — lift, extract, ripple delete (clips or gaps), add edit,
 ripple trim to playhead (`Q` / `W`), nudge, copy/paste/paste insert, duplicate,
@@ -75,6 +75,30 @@ match frame. Unlimited undo through a History panel.
 **Program monitor** — playback with J/K/L shuttle, loop and In-to-Out
 playback, playback resolution, safe margins, frame export. Drag a selected clip
 in the picture to move it; drag a corner to scale it.
+
+**Titles on the canvas** — titles are written and placed on the Program
+monitor itself. With the Type tool (`T`) click where the text should go and
+type; click an existing title with it to type into that one. With the
+Selection tool, click a title's text to select it (a dashed box shows where the
+text is), drag inside the box to move the text, drag a corner to size it, and
+double-click to type. Enter starts a new line; Ctrl+Enter, Esc or a click
+elsewhere finishes, and each edit is one undo step. Moving and sizing work
+through the clip's Motion too (a scaled or turned title is grabbed where it
+is). Effect Controls still has every Text setting.
+
+**Pre-rendered frames in RAM** — the Program monitor keeps the frames it has
+shown in a frame cache, and **Sequence ▸ Render In to Out** (Enter) renders the
+In to Out range (or the whole sequence) ahead of time on a thread of its own.
+A green bar under the timeline ruler marks what is cached (amber while it
+renders). Playing a cached stretch stops rendering pictures altogether: MLT
+keeps the sound and the timing and the frames come from RAM, so heavy effects
+play at full speed. The first frame that is not cached is rendered as usual
+and playback carries on rendering. Frames are kept by what they show, so any
+edit under them takes them out of use and undoing it brings them back;
+scrolling, marking, renaming and the sound mix do not. **Edit ▸ Preferences ▸
+Frame cache** sets the RAM (off, 512 MB to 8 GB, 2 GB by default; a 1080p
+frame is about 6 MB) and **Sequence ▸ Delete Rendered Frames** empties it. A
+cached frame is the one the export renders (a test keeps it so).
 
 **Project settings** — **File ▸ Project Settings** (Ctrl+Shift+P) sets the
 aspect ratio (16:9, 9:16, 1:1, 4:5, 4:3, 21:9… or any custom size), resolution,
@@ -170,6 +194,16 @@ you drew for use on other keyframes. Dragging empty space
 scrubs the playhead. A colour is drawn as its red, green, blue and alpha
 curves over a strip of the colour itself; a switch or choice as a staircase
 between its options; text, fonts and files as a lane of labelled keyframes.
+
+**Keyframe Curves panel** — **Window ▸ Keyframe Curves** (Shift+0) is a large
+graph editor for the selected clip: pick any of its animated parameters and
+edit the curve with room to work (the same dragging, handles and right-click
+curves as above). **Value** shows the value itself; **Speed** shows how fast
+it changes, in its units per second, so an ease that comes to rest or a curve
+that overshoots is plain to see. **Linear**, **Ease In**, **Ease Out** and
+**Easy Ease** reshape the curve into and out of the selected keyframe (or the
+one under the playhead) in one click, keeping the far ends of its segments as
+they are.
 
 **Presets** — **Clip ▸ Save Effects as Preset** writes the selected clip's
 effects, keyframes and curves to a `.tlpreset` file; **File ▸ Import Preset**
@@ -319,6 +353,25 @@ which effects measured in pixels can look different. Each monitor's own
 resolution menu still overrides the default. Preferences and the recent list
 live in `~/.config/tideline/settings.json`.
 
+**Decoders** — **Edit ▸ Preferences ▸ Media ▸ Decoder** chooses what reads
+media files for importing, thumbnails, waveforms and multi-camera sync: FFmpeg
+(its `ffprobe` and `ffmpeg` commands, the default), PyAV, OpenCV or Decord.
+FFmpeg does whatever the chosen one cannot, or when it fails on a file:
+
+| Decoder | Importing | Thumbnails | Waveforms |
+|---------|-----------|------------|-----------|
+| FFmpeg  | yes       | yes        | yes       |
+| PyAV    | yes       | yes        | yes       |
+| OpenCV  | FFmpeg    | yes        | FFmpeg    |
+| Decord  | FFmpeg    | videos (pictures: FFmpeg) | yes |
+
+PyAV reads in-process instead of starting a program per file, so imports,
+thumbnails and waveforms come several times faster. A decoder that is not
+installed shows an **Install** button, which installs it with pip (or uv) into
+`~/.local/share/tideline/python<version>/` (the AppImage uses it too); one
+installed system-wide is found as well. Playback and export always decode with
+MLT's own FFmpeg, which is what keeps the preview identical to the export.
+
 **Keyboard shortcuts** — **Edit ▸ Keyboard Shortcuts** (Ctrl+Alt+K) shows a
 keyboard with every key tinted by what it does (choose Ctrl, Alt and Shift to
 see those layers; hover a key for all its uses, click it to list them) and a
@@ -350,7 +403,11 @@ Being upfront about the gaps compared with a commercial editor:
   times a second rather than at the full frame rate;
 - scopes measure the monitor's picture, so at a reduced playback resolution
   they see the reduced picture;
-- titles are single text blocks edited in Effect Controls, not on the canvas;
+- titles are single text blocks (one font and style for all of the text), and
+  typing on the canvas shows the text in a plain box until it is finished;
+- the frame cache is in RAM only (not on disk), keeps frames at the monitor's
+  playback resolution, and holds Noise and Glitch still (they are random on
+  every render, a cached frame repeats one);
 - transitions and the track mixer have no keyframes;
 - a keyframed title size, stroke or padding is rendered with one text filter
   per changed frame (MLT reads those once), so a long ramp makes a heavy graph;
@@ -445,8 +502,9 @@ and relative path) and are not part of the undo history.
 
 ```sh
 python -m unittest tests.test_core tests.test_engine tests.test_captions tests.test_extensions \
-    tests.test_proxies tests.test_color tests.test_keymap tests.test_dock tests.test_multicam   # 204 tests, no display needed
-TIDELINE_DEBUG_SCRIPT=tests/ui_smoke.py python -m tideline   # 207 end-to-end UI checks
+    tests.test_proxies tests.test_color tests.test_keymap tests.test_dock tests.test_multicam \
+    tests.test_framecache   # 212 tests, no display needed
+TIDELINE_DEBUG_SCRIPT=tests/ui_smoke.py python -m tideline   # 230 end-to-end UI checks
 ```
 
 `test_color` checks the curves against FFmpeg's own `curves` filter, the
@@ -462,7 +520,9 @@ checks caption styles and title animations.
 `test_extensions` loads manifests, Python extensions and every example in
 docs/EXTENSIONS.md, and renders extension effects and wipes. `test_proxies`
 makes real proxies with FFmpeg and checks that the preview plays them while
-exports read the originals.
+exports read the originals. `test_framecache` checks that pre-rendered frames
+are the export's frames, that playback from RAM shows what live playback
+shows, and that every installed decoder reads the same media as FFmpeg.
 `test_engine` builds real MLT graphs from generated media and checks rendered
 pixels and audio, including every transition and every export preset. The UI
 script opens the real window and drives the same handlers the mouse and
@@ -494,7 +554,9 @@ tideline/
     builder.py    model -> MLT graph (rebuilt after each edit, producers cached)
     player.py     real-time playback into GTK through MLT's SDL audio consumer
     effects.py    effect and transition registry
-    media.py      probing, thumbnails, waveform peaks (FFmpeg, cached)
+    media.py      probing, thumbnails, waveform peaks (cached)
+    decoders.py   FFmpeg, PyAV, OpenCV and Decord behind one interface
+    framecache.py pre-rendered preview frames in RAM and the renderer filling them
     export.py     export presets and the melt render job
     hwenc.py      which hardware encoders work, on which GPU
   ui/             GTK 4 panels; the timeline is one custom-drawn canvas

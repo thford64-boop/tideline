@@ -423,9 +423,56 @@ def run(app):
     titles = [m for m in app.project.media.values() if m.kind == "title"]
     tclips = [c for _, c in app.seq.all_clips() if titles and c.media_id == titles[0].id]
     check("the type tool creates a title clip", len(titles) == 1 and len(tclips) == 1 and app.tool == "select")
+    live_title = lambda: app.seq.find_clip(tclips[0].id)[1]
+    check("…and opens a text box on the picture to type it in",
+          pm.title_editor is not None and win.get_focus() is pm.title_editor)
+    steps = len(app.history.states)
+    pm.title_editor.get_buffer().set_text("On canvas")
+    yield 300
+    check("typing on the picture updates the title as you type",
+          live_title().effect("text").params.get("text") == "On canvas")
+    key(Gdk.KEY_Escape)
+    yield 300
+    check("Esc finishes the title in one undo step", pm.title_editor is None and
+          live_title().effect("text").params.get("text") == "On canvas" and len(app.history.states) == steps + 1,
+          (pm.title_editor, len(app.history.states), steps))
     row("text", "text").editor.get_buffer().set_text("Hello")
     yield 700
-    check("typing edits the title", app.seq.find_clip(tclips[0].id)[1].effect("text").params.get("text") == "Hello")
+    check("typing edits the title", live_title().effect("text").params.get("text") == "Hello")
+    # The text box on the picture moves and sizes the text itself.
+    box = pm._title_box(live_title(), live_title().effect("text"))
+    off0 = list(live_title().effect("text").params.get("offset") or [0, 0])
+    steps = len(app.history.states)
+    pm._xf_begin(None, fx + box[0] * k, fy + box[1] * k)
+    pm._xf_update(None, 40 * k, 20 * k)
+    pm._xf_end(None, 40 * k, 20 * k)
+    yield 300
+    off1 = live_title().effect("text").params.get("offset")
+    check("dragging a title's text on the picture moves it", abs(off1[0] - off0[0] - 40) < 1.5
+          and abs(off1[1] - off0[1] - 20) < 1.5 and live_title().effect("motion").params.get("position") is None,
+          (off0, off1))
+    box = pm._title_box(live_title(), live_title().effect("text"))
+    size0 = live_title().effect("text").params.get("size")
+    cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
+    pm._xf_begin(None, fx + cx * k, fy + cy * k)
+    pm._xf_update(None, box[2] / 2 * k, box[3] / 2 * k)
+    pm._xf_end(None, box[2] / 2 * k, box[3] / 2 * k)
+    yield 300
+    size1 = live_title().effect("text").params.get("size")
+    check("dragging a corner of the title's box sizes the text", abs(size1 - 2 * size0) <= 2, (size0, size1))
+    box = pm._title_box(live_title(), live_title().effect("text"))
+    pm._view_clicked(None, 2, fx + box[0] * k, fy + box[1] * k)
+    yield 200
+    buf = pm.title_editor.get_buffer() if pm.title_editor else None
+    check("double-clicking a title on the picture types into it", buf is not None and
+          buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False) == "Hello")
+    pm.finish_title()
+    app.do("undo")
+    app.do("undo")
+    yield 400
+    check("moving and sizing titles on the picture undo", len(app.history.states) >= steps
+          and live_title().effect("text").params.get("offset") == off0
+          and live_title().effect("text").params.get("size") == size0)
 
     # ---- keyframes and graphs for every kind of parameter --------------------
     from tideline import fonts, presets
@@ -1192,6 +1239,101 @@ def run(app):
     yield 400
     check("Reset Workspace Layout restores the starting layout", win.state == dockmod.default("editing"),
           (win.state, dockmod.default("editing")))
+
+    # ---- pre-rendered frames in RAM -----------------------------------------
+    from tideline.engine import decoders, framecache
+    if app.program.playing:
+        app.do("play_toggle")
+    app.seq.in_point, app.seq.out_point = 0, 45
+    app.emit("marks")
+    app.set_playhead(0)
+    yield 300
+    key(Gdk.KEY_Return)
+    check("Enter renders In to Out into the frame cache", app.prerender is not None)
+    for _ in range(150):
+        if app.prerender is None:
+            break
+        yield 100
+    cache_key = app.program.cache_key
+    check("the rendered frames are kept in RAM", cache_key is not None and
+          app.frame_cache.run_ahead(cache_key, 0, 45) == 45, app.frame_cache.ranges(cache_key))
+    tl.queue_draw()
+    hits = app.program.cache_hits
+    app.focus = "program"
+    app.do("play_toggle")
+    yield 100
+    check("playing a rendered stretch stops rendering pictures", app.program.cached_mode)
+    yield 900
+    app.do("play_toggle")
+    yield 300
+    check("…and shows the cached frames", app.program.cache_hits - hits > 10, app.program.cache_hits - hits)
+    first_clip = v(0).clips[0]
+    app.toggle_effect(first_clip.effect("opacity"), False)
+    yield 400
+    check("an edit gives the picture a new signature, so no stale frame is shown",
+          app.program.cache_key != cache_key and app.frame_cache.run_ahead(app.program.cache_key, 0, 45) < 45)
+    app.do("undo")
+    yield 500
+    check("undoing it finds the rendered frames again", app.program.cache_key == cache_key)
+    app.do("clear_frame_cache")
+    check("Delete Rendered Frames empties the cache", app.frame_cache.used == 0)
+    app.seq.in_point = app.seq.out_point = None
+    app.emit("marks")
+
+    # ---- keyframe curves panel ---------------------------------------------
+    clip = v(0).clips[0]
+    op = clip.effect("opacity")
+    pdef = EFFECTS["opacity"].param("opacity")
+    t = clip.in_point
+    app.set_keyframes(op, pdef, [[t, 100.0, "linear"], [t + 20, 0.0, "linear"], [t + 40, 100.0, "linear"]])
+    app.select([clip.id], expand=False)
+    app.do("panel_curves")
+    yield 400
+    cp = win.curves_panel
+    check("Keyframe Curves lists the clip's animated parameters", [p.name for _, p in cp.params] == ["opacity"]
+          and cp.graph is not None, [p.name for _, p in cp.params])
+    cp.graph.selected = 1
+    cp.ease("easy_ease")
+    yield 200
+    kfs = v(0).clips[0].effect("opacity").keyframes["opacity"]
+    check("Easy Ease flattens the curve into and out of the keyframe",
+          kfs[0][2] == "bezier" and kfs[0][3][2:] == [round(1 - kf.EASE_INFLUENCE, 4), 1.0]
+          and kfs[1][2] == "bezier" and kfs[1][3][:2] == [kf.EASE_INFLUENCE, 0.0], kfs)
+    fps = app.seq.fps
+    check("…so the value comes to rest on it", kf.speed(kfs, t + 20, fps) < 1.0 < kf.speed(kfs, t + 10, fps))
+    cp.speed_btn.set_active(True)
+    yield 200
+    lo, hi = cp.graph.value_range()
+    check("the Speed graph shows how fast the value changes", cp.graph.speed_view and lo <= 0 < hi
+          and hi > kf.speed(kfs, t + 10, fps))
+    cp.ease("linear")
+    yield 200
+    kfs = v(0).clips[0].effect("opacity").keyframes["opacity"]
+    check("Linear makes both sides straight again", [k[2] for k in kfs[:2]] == ["linear", "linear"], kfs)
+    cp.speed_btn.set_active(False)
+    cp.value_btn.set_active(True)
+
+    # ---- decoders and frame cache in Preferences ---------------------------
+    from tideline.ui.launcher import PreferencesDialog
+    dlg = PreferencesDialog(app)
+    dlg.present()
+    yield 300
+    names = [dlg.decoder.get_model().get_string(i) for i in range(dlg.decoder.get_model().get_n_items())]
+    check("Preferences offers FFmpeg, PyAV, OpenCV and Decord", [n.split(" (")[0] for n in names]
+          == ["FFmpeg", "PyAV", "OpenCV", "Decord"], names)
+    dlg.decoder.set_selected(2)
+    yield 100
+    check("a decoder that is not installed offers to install it",
+          dlg.install_btn.get_visible() == (not decoders.available("opencv")))
+    dlg.cache_size.set_selected(1)
+    dlg.accept()
+    yield 200
+    check("the decoder and frame cache size are saved", app.prefs["decoder"] == "opencv"
+          and decoders.current == "opencv" and app.frame_cache.budget == 512 * framecache.MB)
+    probed = mediamod.probe(f"{TMP}/a.mp4")
+    check("importing still works with another decoder (FFmpeg fills in)", (probed.width, probed.height) == (640, 360))
+    app.prefs["decoder"], app.prefs["frame_cache_mb"] = "ffmpeg", 2048
+    app.apply_playback_prefs(scale_monitors=False)
 
     # ---- nesting, project panel, persistence --------------------------------
     first = app.project.media_for_sequence(app.seq.id)

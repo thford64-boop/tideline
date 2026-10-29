@@ -17,6 +17,7 @@ ACCENT_DIM = "#1b7a71"
 PLAYHEAD = "#ff7a59"
 SELECT = "#f3f6fa"
 WARN = "#e5a93b"
+RENDERED = "#3fbf5f"   # render bar: frames in the RAM cache
 DANGER = "#e0564b"
 MARKER_COLORS = ["#2fc6b5", "#ff7a59", "#e5a93b", "#7ecb5f", "#5aa9e6", "#b07be0", "#e06c9f", "#9aa5b4"]
 
@@ -144,6 +145,8 @@ paned > separator {{ background: {BG0}; min-width: 5px; min-height: 5px; }}
 .workspace-switch button {{ background: none; border: none; box-shadow: none; color: {TEXT_DIM}; padding: 2px 12px; border-radius: 4px; font-weight: 500; }}
 .workspace-switch button:checked {{ color: {TEXT}; background: {BG3}; }}
 .dialog-body {{ padding: 16px; }}
+textview.title-editor, textview.title-editor text {{ background-color: rgba(12, 15, 19, 0.82); }}
+textview.title-editor {{ border: 1px solid {ACCENT}; border-radius: 2px; padding: 2px 4px; }}
 button.suggested-action {{ background: {ACCENT_DIM}; color: #ffffff; border: none; }}
 button.suggested-action:hover {{ background: {ACCENT}; color: #0b1a18; }}
 button.destructive-action {{ background: {DANGER}; color: #ffffff; border: none; }}

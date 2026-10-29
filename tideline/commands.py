@@ -66,6 +66,8 @@ COMMANDS = [
     ("nudge_right_5", "Nudge Right Five Frames", "<Alt><Shift>Right", "Clip"),
 
     ("sequence_settings", "Sequence Settings…", "", "Sequence"),
+    ("render_preview", "Render In to Out", "Return", "Sequence"),
+    ("clear_frame_cache", "Delete Rendered Frames", "", "Sequence"),
     ("add_edit", "Add Edit", "<Ctrl>k", "Sequence"),
     ("add_edit_all", "Add Edit to All Tracks", "<Ctrl><Shift>k", "Sequence"),
     ("ripple_trim_prev", "Ripple Trim Previous Edit to Playhead", "q", "Sequence"),
@@ -150,6 +152,7 @@ COMMANDS = [
     ("panel_multicam", "Multi-Camera", "<Shift>9", "Window"),
     ("panel_history", "History", "", "Window"),
     ("panel_info", "Info", "", "Window"),
+    ("panel_curves", "Keyframe Curves", "<Shift>0", "Window"),
     ("reset_workspace", "Reset Workspace Layout", "", "Window"),
     ("toggle_safe_margins", "Safe Margins", "", "Window"),
     ("popout_monitor", "Pop-out Preview…", "<Ctrl><Shift>F11", "Window"),
@@ -162,7 +165,7 @@ BY_NAME = {c[0]: c for c in COMMANDS}
 # Extra keys that trigger an existing command.
 ALIASES = [("BackSpace", "delete"), ("<Shift>BackSpace", "ripple_delete"), ("plus", "zoom_in"),
            ("KP_Add", "zoom_in"), ("KP_Subtract", "zoom_out"), ("<Shift>equal", "zoom_in"),
-           ("<Ctrl>y", "redo")] + [(f"KP_{n}", f"camera_{n}") for n in range(1, 10)]
+           ("<Ctrl>y", "redo"), ("KP_Enter", "render_preview")] + [(f"KP_{n}", f"camera_{n}") for n in range(1, 10)]
 
 TOOLS = [
     ("select", "Selection Tool", "V"),
@@ -195,7 +198,7 @@ MENUS = [
     ("Sequence", ["sequence_settings", None, "add_edit", "add_edit_all", "ripple_trim_prev",
                   "ripple_trim_next", None, "video_transition", "audio_transition",
                   "default_transitions", None, ("Captions", ["auto_captions", "caption_style", None, "import_captions", "export_captions"]),
-                  None, "lift", "extract", None, "zoom_in", "zoom_out", "zoom_fit",
+                  None, "render_preview", "clear_frame_cache", None, "lift", "extract", None, "zoom_in", "zoom_out", "zoom_fit",
                   None, "toggle_snap", "toggle_linked", None, "add_video_track", "add_audio_track",
                   "delete_empty_tracks", "taller_tracks", "shorter_tracks"]),
     ("Markers", ["mark_in", "mark_out", "mark_clip", None, "goto_in", "goto_out", None, "clear_in",
@@ -207,7 +210,7 @@ MENUS = [
     ("Window", [("Workspaces", ["workspace_editing", "workspace_effects", "workspace_color", "workspace_audio"]),
                 "reset_workspace", "toggle_fullscreen", "maximize_panel", None, "panel_project", "panel_source",
                 "panel_timeline", "panel_program", "panel_effect_controls", "panel_mixer", "panel_effects",
-                "panel_scopes", "panel_multicam", "panel_history", "panel_info", None,
+                "panel_scopes", "panel_multicam", "panel_curves", "panel_history", "panel_info", None,
                 "toggle_safe_margins", "popout_monitor"]),
     # Commands that extensions add are listed after these, one section per extension.
     ("Extensions", ["extensions", "extensions_folder"]),

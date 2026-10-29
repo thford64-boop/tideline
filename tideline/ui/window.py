@@ -8,6 +8,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk
 from .. import APP_NAME
 from .. import dock
 from ..commands import BY_NAME, MENUS
+from .curves_panel import CurvesPanel
 from .effect_controls import EffectControls
 from .monitor import MonitorPanel
 from .multicam import MultiCamPanel
@@ -97,6 +98,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.info_panel = InfoPanel(app)
         self.scopes_panel = ScopesPanel(app)
         self.multicam_panel = MultiCamPanel(app)
+        self.curves_panel = CurvesPanel(app)
         self.timeline_panel = TimelinePanel(app)
         self.timeline = self.timeline_panel.view
         self.mixer = AudioMixer(app)
@@ -114,7 +116,8 @@ class MainWindow(Gtk.ApplicationWindow):
         timeline_dock.append(meter_frame)
         self.panels = {"source": self.source_monitor, "program": self.program_monitor,
                        "effect_controls": self.effect_controls, "mixer": self.mixer,
-                       "multicam": self.multicam_panel, "project": self.project_panel,
+                       "multicam": self.multicam_panel, "curves": self.curves_panel,
+                       "project": self.project_panel,
                        "effects": self.effects_panel, "scopes": self.scopes_panel, "history": self.history_panel,
                        "info": self.info_panel, "timeline": timeline_dock}
 

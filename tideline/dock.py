@@ -14,7 +14,7 @@ import copy
 
 PANELS = {"source": "Source", "program": "Program", "timeline": "Timeline", "project": "Project",
           "effect_controls": "Effect Controls", "effects": "Effects", "mixer": "Audio Mixer", "scopes": "Scopes",
-          "multicam": "Multi-Camera", "history": "History", "info": "Info"}
+          "multicam": "Multi-Camera", "curves": "Keyframe Curves", "history": "History", "info": "Info"}
 ZONES = ("center", "left", "right", "top", "bottom")
 MIN_POS, MAX_POS = 0.06, 0.94
 
@@ -29,8 +29,8 @@ def split(kind, pos, a, b):
 
 def _workspace(top, left, bottom_left, upper, lower):
     return {"tree": split("v", top,
-                          split("h", left, leaf("source", "effect_controls", "mixer", "multicam", active=upper),
-                                leaf("program")),
+                          split("h", left, leaf("source", "effect_controls", "curves", "mixer", "multicam",
+                                                active=upper), leaf("program")),
                           split("h", bottom_left, leaf("project", "effects", "scopes", "history", "info", active=lower),
                                 leaf("timeline"))),
             "floating": []}

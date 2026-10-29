@@ -28,6 +28,8 @@ from . import timeremap  # noqa: E402
 from . import timecode as tc  # noqa: E402
 from .commands import BY_NAME, COMMANDS  # noqa: E402
 from .edits import AUDIO_TRANSITIONS, EditError, Editor  # noqa: E402
+from .engine import decoders  # noqa: E402
+from .engine import framecache  # noqa: E402
 from .engine import media as mediamod  # noqa: E402
 from .engine import mltlib  # noqa: E402
 from .engine.builder import Builder, _rational_fps  # noqa: E402
@@ -90,6 +92,10 @@ class App(Adw.Application):
             on_progress=lambda job, i, n: GLib.idle_add(self._proxy_progress, job, i, n),
             on_done=lambda job, ok: GLib.idle_add(self._proxy_done, job, ok))
         self._proxy_made = 0
+        self.frame_cache = framecache.FrameCache(self.prefs["frame_cache_mb"])
+        self.prerender = None             # framecache.Renderer filling the cache, or None
+        self._sig_id = 0
+        decoders.set_backend(self.prefs["decoder"])
 
     # -- events ----------------------------------------------------------
     def on(self, event, fn):
@@ -125,6 +131,7 @@ class App(Adw.Application):
         self._load_extensions()
         self.builder = Builder(self.project, proxies=self.prefs["use_proxies"])
         self.program = Player("program")
+        self.program.cache = self.frame_cache
         self.source = Player("source")
         self.apply_playback_prefs()
         for name, label, accel, group in COMMANDS:
@@ -228,6 +235,9 @@ class App(Adw.Application):
 
     def do_shutdown(self):
         self.proxy_queue.cancel()
+        if self.prerender is not None:
+            self.prerender.cancel()
+            self.prerender.wait(5)
         for p in (self.program, self.source):
             if p is not None:
                 p.close()
@@ -331,6 +341,7 @@ class App(Adw.Application):
         self.program.set_producer(graph.tractor, graph.profile, graph.length, position=pos,
                                   refs=graph, resume=True)
         self.graph = graph
+        self._update_cache_sig()
         if not was_source:
             self.program.activate()
             self.program.refresh()
@@ -517,7 +528,111 @@ class App(Adw.Application):
             if player is not None:
                 player.configure(scale=p["preview_scale"] if scale_monitors else None, scaling=p["scaling"],
                                  threads=threads, drop_frames=p["drop_frames"])
+        self.frame_cache.set_budget(p["frame_cache_mb"])
+        decoders.set_backend(p["decoder"])
+        if self.program is not None:
+            self._update_cache_sig()
         self.emit("playback_prefs")
+        self.emit("frame_cache")
+
+    # -- pre-rendered frames (RAM cache) ---------------------------------
+    def _update_cache_sig(self, later=False):
+        """Tell the Program monitor what its graph shows now. While a value
+        is being dragged the hash waits until it settles."""
+        if self._sig_id:
+            GLib.source_remove(self._sig_id)
+            self._sig_id = 0
+        if later:
+            self.program.set_cache_sig(None)
+            self._sig_id = GLib.timeout_add(150, self._update_cache_sig)
+            return False
+        seq = self.seq
+        sig = None
+        if seq is not None and self.graph is not None and self.frame_cache.enabled:
+            sig = framecache.signature(self.project, seq, (self.prefs["use_proxies"],))
+        self.program.set_cache_sig(sig)
+        job = self.prerender
+        if job is not None and job.sig != self.program.cache_key:
+            job.cancel()
+        self.emit("frame_cache")
+        return False
+
+    def cmd_render_preview(self):
+        """Render the In to Out range (all of the sequence without marks)
+        into the RAM frame cache, so it plays back without rendering."""
+        seq = self.seq
+        if seq is None or seq.end() == 0:
+            return self.status("There is nothing to render: the sequence is empty.", warn=True)
+        if not self.frame_cache.enabled:
+            return self.status("The frame cache is off. Turn it on in Edit ▸ Preferences ▸ Frame cache.", warn=True)
+        if self.prerender is not None:
+            self.prerender.cancel()
+            self.prerender = None
+            return self.status("Stopped rendering preview frames.")
+        if self._rebuild_id:
+            self._rebuild()
+        self._update_cache_sig()
+        key = self.program.cache_key
+        if key is None:
+            return
+        first = seq.in_point or 0
+        last = (seq.out_point if seq.out_point is not None else seq.end()) - 1
+        w, h = self.program.preview_size()
+        fit = max(1, self.frame_cache.budget // (w * h * 3))
+        note = ""
+        if last - first + 1 > fit:
+            last = first + fit - 1
+            note = f" Only {tc.frames_to_tc(fit, *self.fps())} fits in the frame cache; a bigger one is in Preferences."
+        graph = Builder(self.project, proxies=self.prefs["use_proxies"]).build(seq)
+        if self.frame_cache.run_ahead(key, first, last - first + 1) >= last - first + 1:
+            return self.status("Those frames are already rendered.")
+        state = {"shown": 0}
+
+        def progress(done, total):
+            if done - state["shown"] >= 5 or done == total:
+                state["shown"] = done
+                GLib.idle_add(self._prerender_progress, job, done, total)
+
+        def finished(cancelled):
+            GLib.idle_add(self._prerender_done, job, cancelled)
+
+        job = framecache.Renderer(graph, self.frame_cache, key, first, last, (w, h),
+                                  self.program.preview_rescale(), progress, finished)
+        job.note = note
+        job.keep = graph
+        self.prerender = job
+        # The first picture of a fresh graph can be MLT's test card; render it once to throw away.
+        job.render(first)
+        job.start()
+        self.status(f"Rendering preview frames… (Enter again stops){note}")
+        self.emit("frame_cache")
+
+    def _prerender_progress(self, job, done, total):
+        if job is self.prerender:
+            self.status(f"Rendering preview frames… {done * 100 // max(1, total)}%")
+            self.emit("frame_cache")
+        return False
+
+    def _prerender_done(self, job, cancelled):
+        if job is not self.prerender:
+            return False
+        self.prerender = None
+        self.emit("frame_cache")
+        if not cancelled:
+            mb = self.frame_cache.used / framecache.MB
+            self.status(f"Rendered {job.done} frames into RAM ({mb:.0f} MB of the frame cache in use). "
+                        f"They play back without rendering until something under them changes.{job.note}")
+        # A frame on screen that is now cached plays from RAM straight away.
+        if self.program.playing and self.program.speed == 1.0 and self.program._cache_ahead():
+            self.program._set_cached_mode(True)
+        return False
+
+    def cmd_clear_frame_cache(self):
+        if self.prerender is not None:
+            self.prerender.cancel()
+        self.frame_cache.clear()
+        self.emit("frame_cache")
+        self.status("Deleted the rendered preview frames.")
 
     def cmd_preferences(self):
         from .ui.launcher import PreferencesDialog
@@ -1660,6 +1775,7 @@ class App(Adw.Application):
         if self.graph is None or not self.graph.update_effect(effect):
             self.queue_rebuild()
         else:
+            self._update_cache_sig(later=not final)
             self.program.activate()
             self.program.refresh()
         if final:
@@ -1674,6 +1790,7 @@ class App(Adw.Application):
         if self.graph is None or not self.graph.update_audio_tracks(seq):
             self.queue_rebuild()
         else:
+            self._update_cache_sig(later=not final)
             self.program.refresh()
         if final:
             self.commit(label, rebuild=False)
@@ -2584,6 +2701,7 @@ class App(Adw.Application):
 
     def _proxies_changed(self):
         self.builder.proxies = self.prefs["use_proxies"]
+        self.program.set_cache_sig(None)
         self.queue_rebuild()
         self._reload_source()
         self.emit("proxies")

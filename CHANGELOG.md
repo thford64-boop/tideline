@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.0.7 (2026-10-29)
+
+- **Titles on the canvas**: write and place titles on the Program monitor
+  itself. The Type tool clicks a title into the picture and you type straight
+  away (or types into an existing one); with the Selection tool, a title's
+  text has a box to drag it by, corners to size it, and a double-click types
+  into it. Each edit is one undo step; Effect Controls keeps every setting.
+- **Pre-rendered frames in RAM**: Sequence ▸ Render In to Out (Enter) renders
+  a range ahead of time into a frame cache, and frames already shown are kept
+  too. Cached stretches (a green bar under the ruler) play without rendering
+  pictures at all, so heavy effects play at full speed; frames are matched to
+  what they show, so an edit never shows a stale one and undo brings them
+  back. Preferences ▸ Frame cache sets the RAM (2 GB by default); Sequence ▸
+  Delete Rendered Frames empties it.
+- **Keyframe Curves panel** (Window ▸ Keyframe Curves, Shift+0): a large graph
+  editor for the selected clip's animated parameters, with a Value graph to
+  edit and a Speed graph to judge eases, and one-click Linear, Ease In, Ease
+  Out and Easy Ease.
+- **Choice of decoder**: Preferences ▸ Media ▸ Decoder reads media for
+  importing, thumbnails, waveforms and multi-camera sync with FFmpeg, PyAV,
+  OpenCV or Decord; FFmpeg fills in for what a decoder cannot do. A missing
+  one can be installed from Preferences. Playback and export still decode
+  with MLT's FFmpeg, so the preview stays the export.
+
 ## 0.0.6 (2026-10-22)
 
 - **DeepVoice and Cutout are built in**: isolate or remove a voice (Demucs)

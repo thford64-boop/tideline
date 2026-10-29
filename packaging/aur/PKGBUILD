@@ -1,6 +1,6 @@
 # Maintainer: YOUR NAME <son748263@gmail.com>
 pkgname=tideline
-pkgver=0.0.6
+pkgver=0.0.7
 pkgrel=1
 pkgdesc="Non-linear video editor built on MLT and GTK 4"
 arch=('any')
@@ -12,9 +12,11 @@ optdepends=('rubberband: keep audio pitch when changing clip speed'
             'vid.stab: MLT stabilisation plugin'
             'rnnoise: MLT noise suppression plugin'
             'whisper-cpp: auto captions (speech recognition)'
-            'python-openai-whisper: auto captions with OpenAI Whisper')
+            'python-openai-whisper: auto captions with OpenAI Whisper'
+            'python-av: PyAV decoder for importing, thumbnails and waveforms'
+            'python-opencv: OpenCV decoder for thumbnails')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/thford64-boop/tideline/archive/refs/tags/$pkgver.tar.gz")
-sha256sums=('d2a47fb0e5044cb71f4ad1cc4db73b30a33a7d6c266515edf024164574b33103')
+sha256sums=('SKIP')
 
 package() {
   cd "$pkgname-$pkgver"

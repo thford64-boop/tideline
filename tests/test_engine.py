@@ -385,6 +385,24 @@ class Graphs(Base):
     def ink(img):
         return int(((img[..., 0] > 200) & (img[..., 1] > 200) & (img[..., 2] > 200)).sum())
 
+    def test_title_box_surrounds_the_rendered_text(self):
+        # The Program monitor draws this box to move and size titles on the picture.
+        from tideline.engine.effects import title_box
+        for params in ({"text": "Hello"}, {"text": "Two lines\nof text", "size": 60, "halign": "left",
+                                            "valign": "top", "offset": [40, 30]},
+                       {"text": "Bold!", "size": 90, "bold": True, "halign": "right", "valign": "bottom",
+                        "padding": 12}):
+            self.setUp()
+            text = self.title(**params)
+            img = frame(self.build(), 5)
+            ys, xs = np.nonzero((img[..., 0] > 200) & (img[..., 1] > 200) & (img[..., 2] > 200))
+            x, y, w, h = title_box(text, 5, W, H)
+            msg = (f"{params['text']!r}: ink {xs.min()},{ys.min()}-{xs.max()},{ys.max()} "
+                   f"box {x:.0f},{y:.0f} {w:.0f}×{h:.0f}")
+            self.assertTrue(x - 3 <= xs.min() and xs.max() <= x + w + 3, msg)
+            self.assertTrue(y - 3 <= ys.min() and ys.max() <= y + h + 3, msg)
+            self.assertLess(w - (xs.max() - xs.min()), 0.3 * w + 2 * params.get("padding", 0), msg)
+
     def test_text_content_and_size_keyframes(self):
         text = self.title()
         text.keyframes = {"text": [[0, "I", "hold"], [30, "WWWWWW", "hold"], [60, "", "hold"]]}

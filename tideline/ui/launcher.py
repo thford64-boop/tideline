@@ -10,6 +10,8 @@ from gi.repository import Gio, GLib, Gtk, Pango, PangoCairo
 from .. import APP_ID, APP_NAME, PROJECT_EXT, VERSION
 from .. import dock
 from .. import proxies as proxymod
+from ..engine import decoders
+from ..engine import framecache
 from .. import settings as st
 from ..model import DEFAULT_SETTINGS
 from . import theme
@@ -547,6 +549,12 @@ class PreferencesDialog(_Dialog):
                                      "playing. The picture itself always plays at full frame rate.")
         self.live = self.add_row("Effect Controls while playing", Gtk.Switch(halign=Gtk.Align.START))
         self.live.set_tooltip_text("Update parameter values during playback (they always update when stopped)")
+        self.cache_size = self.add_row("Frame cache", Gtk.DropDown.new_from_strings(
+            [n for _, n in framecache.SIZES]))
+        self.cache_size.set_tooltip_text(
+            "RAM for pre-rendered Program monitor frames. Frames already shown are kept, and Sequence ▸ "
+            "Render In to Out (Enter) renders a range ahead of time; cached stretches (green under the "
+            "ruler) play without rendering. A 1080p frame takes about 6 MB.")
 
         self.grid.attach(label("Start-up", css="heading", margin_top=10), 0, self._row, 2, 1)
         self._row += 1
@@ -569,6 +577,22 @@ class PreferencesDialog(_Dialog):
                                           "(the cache folder until the project is saved)")
         self.proxy_auto = self.add_row("Create on import", Gtk.DropDown.new_from_strings(
             [n for _, n in proxymod.AUTO]))
+        self.grid.attach(label("Media", css="heading", margin_top=10), 0, self._row, 2, 1)
+        self._row += 1
+        box = Gtk.Box(spacing=6)
+        self.decoder = Gtk.DropDown.new_from_strings([self._decoder_name(k) for k, _ in decoders.BACKENDS])
+        self.decoder.set_tooltip_text(
+            "What reads media files for importing, thumbnails, waveforms and multi-camera sync. FFmpeg "
+            "does whatever the chosen decoder cannot. Playback and export always decode with MLT's FFmpeg, "
+            "so the preview stays the export.")
+        self.install_btn = Gtk.Button(label="Install")
+        self.install_btn.connect("clicked", self._install_decoder)
+        box.append(self.decoder)
+        box.append(self.install_btn)
+        self.add_row("Decoder", box)
+        self.decoder_note = label("", css="faint", xalign=0.0, wrap=True, max_width_chars=46)
+        self.grid.attach(self.decoder_note, 1, self._row, 1, 1)
+        self._row += 1
         pick = lambda options, value, fallback=0: next((i for i, (k, _) in enumerate(options) if k == value),
                                                        fallback)
         self.use_proxies.set_active(bool(p["use_proxies"]))
@@ -576,6 +600,10 @@ class PreferencesDialog(_Dialog):
         self.proxy_codec.set_selected(pick(proxymod.CODECS, p["proxy_codec"]))
         self.proxy_where.set_selected(pick(proxymod.LOCATIONS, p["proxy_location"]))
         self.proxy_auto.set_selected(pick(proxymod.AUTO, p["proxy_auto"]))
+        self.cache_size.set_selected(pick(framecache.SIZES, p["frame_cache_mb"], 3))
+        self.decoder.set_selected(pick(decoders.BACKENDS, p["decoder"]))
+        self.decoder.connect("notify::selected", lambda *_: self._show_decoder())
+        self._show_decoder()
 
         self._load(p)
         self.quality.connect("notify::selected", self._quality_picked)
@@ -584,6 +612,50 @@ class PreferencesDialog(_Dialog):
         for w in (self.drop, self.live):
             w.connect("notify::active", self._detail_changed)
         self.extra.append(label("Exports always render at full quality.", css="faint"))
+
+    # -- decoders ----------------------------------------------------------
+    @staticmethod
+    def _decoder_name(key):
+        name = decoders.LABELS[key]
+        return name if decoders.available(key) else f"{name} (not installed)"
+
+    def _show_decoder(self):
+        key = decoders.BACKENDS[self.decoder.get_selected()][0]
+        jobs = [("probe", "importing"), ("thumbnail", "thumbnails"), ("audio", "waveforms")]
+        if key == "ffmpeg":
+            text = "FFmpeg's ffprobe and ffmpeg read everything."
+        elif not decoders.available(key):
+            text = f"{decoders.LABELS[key]} is not installed; FFmpeg is used until it is."
+        else:
+            own = [n for job, n in jobs if job in decoders.CAN[key]]
+            rest = [n for job, n in jobs if job not in decoders.CAN[key]]
+            text = f"{decoders.LABELS[key]} reads {', '.join(own)}" + (
+                f"; FFmpeg does {', '.join(rest)}." if rest else ".")
+            if key == "decord":
+                text += " Decord reads videos only, so pictures go to FFmpeg."
+        self.decoder_note.set_text(text)
+        self.install_btn.set_visible(key != "ffmpeg" and not decoders.available(key))
+
+    def _install_decoder(self, _btn):
+        import threading
+        key = decoders.BACKENDS[self.decoder.get_selected()][0]
+        self.install_btn.set_sensitive(False)
+        self.install_btn.set_label("Installing…")
+        self.decoder_note.set_text(f"Installing {decoders.LABELS[key]} into {decoders.user_site()}…")
+
+        def done(ok, message):
+            self.install_btn.set_sensitive(True)
+            self.install_btn.set_label("Install")
+            selected = self.decoder.get_selected()
+            self.decoder.set_model(Gtk.StringList.new([self._decoder_name(k) for k, _ in decoders.BACKENDS]))
+            self.decoder.set_selected(selected)
+            self._show_decoder()
+            if not ok:
+                self.decoder_note.set_text(message)
+            self.app.status(message, warn=not ok)
+            return False
+
+        threading.Thread(target=lambda: GLib.idle_add(done, *decoders.install(key)), daemon=True).start()
 
     def _load(self, values):
         self._busy = True
@@ -640,6 +712,8 @@ class PreferencesDialog(_Dialog):
         p["proxy_codec"] = proxymod.CODECS[self.proxy_codec.get_selected()][0]
         p["proxy_location"] = proxymod.LOCATIONS[self.proxy_where.get_selected()][0]
         p["proxy_auto"] = proxymod.AUTO[self.proxy_auto.get_selected()][0]
+        p["frame_cache_mb"] = framecache.SIZES[self.cache_size.get_selected()][0]
+        p["decoder"] = decoders.BACKENDS[self.decoder.get_selected()][0]
         p.save()
         app.set_use_proxies(self.use_proxies.get_active())
         # A changed default resolution resets both monitors; otherwise a

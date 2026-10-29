@@ -1,18 +1,18 @@
 """Media probing, thumbnails and audio waveform peaks.
 
-Everything slow runs in FFmpeg subprocesses on a small thread pool, with
+Everything slow runs on a small thread pool, decoded by the decoder chosen
+in Preferences (FFmpeg unless another is picked, see ``decoders``), with
 results cached on disk under ``$XDG_CACHE_HOME/tideline``.
 """
 
 import hashlib
-import json
 import os
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
 from ..model import LABEL_AUDIO, LABEL_VIDEO, MediaItem
+from . import decoders
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".svg", ".exr", ".tga",
              ".jxl", ".avif", ".heic"}
@@ -41,7 +41,7 @@ def _fraction(text):
 
 
 def probe(path):
-    """Inspect a file with ffprobe and return a MediaItem (not yet in a project)."""
+    """Inspect a file and return a MediaItem (not yet in a project)."""
     name = os.path.basename(path)
     ext = os.path.splitext(path)[1].lower()
     if not os.path.isfile(path):
@@ -49,14 +49,9 @@ def probe(path):
     if ext == ".svg":
         return MediaItem(name=name, kind="image", path=path, has_video=True, label=LABEL_VIDEO)
     try:
-        out = subprocess.run(
-            ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path],
-            capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ProbeError(f"{name}: could not run ffprobe ({exc})") from exc
-    if out.returncode != 0:
-        raise ProbeError(f"{name}: not a supported media file")
-    info = json.loads(out.stdout or "{}")
+        info = decoders.probe_info(path)
+    except decoders.DecodeError as exc:
+        raise ProbeError(f"{name}: {exc}") from exc
     streams = info.get("streams", [])
     fmt = info.get("format", {})
     video = next((s for s in streams if s.get("codec_type") == "video"
@@ -118,23 +113,15 @@ def thumbnail_png(path, seconds, height, is_image=False):
     if os.path.exists(cache):
         with open(cache, "rb") as fh:
             return fh.read()
-    cmd = ["ffmpeg", "-v", "error", "-nostdin"]
-    if not is_image:
-        cmd += ["-ss", f"{max(0.0, seconds):.3f}"]
-    cmd += ["-i", path, "-frames:v", "1", "-vf", f"scale=-2:{height}", "-f", "image2pipe",
-            "-vcodec", "png", "-"]
-    try:
-        out = subprocess.run(cmd, capture_output=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if out.returncode != 0 or not out.stdout:
+    data = decoders.thumbnail_png(path, seconds, height, is_image)
+    if not data:
         return None
     try:
         with open(cache, "wb") as fh:
-            fh.write(out.stdout)
+            fh.write(data)
     except OSError:
         pass
-    return out.stdout
+    return data
 
 
 def waveform_peaks(path):
@@ -145,15 +132,9 @@ def waveform_peaks(path):
             return np.load(cache)
         except (OSError, ValueError):
             pass
-    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", path, "-vn", "-ac", "1", "-ar", str(_PEAK_RATE),
-           "-f", "s16le", "-"]
-    try:
-        out = subprocess.run(cmd, capture_output=True, timeout=600)
-    except (OSError, subprocess.TimeoutExpired):
+    samples = decoders.audio_mono(path, _PEAK_RATE)
+    if samples is None or not len(samples):
         return None
-    if out.returncode != 0 or not out.stdout:
-        return None
-    samples = np.frombuffer(out.stdout, dtype=np.int16)
     block = _PEAK_RATE // PEAKS_PER_SECOND
     n = len(samples) // block
     if n == 0:

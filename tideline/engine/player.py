@@ -7,6 +7,12 @@ threads; the listener copies the picture out and hands it to the main loop.
 Every call that can wait on a consumer thread (start, stop, purge) goes through
 ctypes so the GIL is released while waiting, otherwise the consumer thread
 could block forever trying to enter the frame listener.
+
+With a frame cache (see framecache), every picture shown is kept in RAM. When
+the frames ahead of the playhead are all there, the consumer is restarted
+with ``video_off``: it keeps the sound and the timing but renders no
+pictures, and the listener hands out the cached ones. The first frame that
+is not cached is rendered on the spot and playback goes back to rendering.
 """
 
 import ctypes
@@ -50,6 +56,13 @@ class Player:
         self._settle = False     # render the first frame of a new producer twice (see set_producer)
         self._listener = mltlib.LISTENER(self._frame_show)
         self._event = None
+        self.cache = None        # FrameCache shared with the pre-renderer, or None
+        self._sig = None         # what the current graph shows; frames are cached under (sig, size)
+        self._key = None
+        self._skip = 0           # frames still in flight from before the last change: not cached
+        self.cached_mode = False  # consumer runs with video_off, pictures come from the cache
+        self._switch = None      # pending change of cached_mode, applied on the main loop
+        self.cache_hits = 0
 
     # -- graph -----------------------------------------------------------
     @property
@@ -71,6 +84,7 @@ class Player:
         old = (self._producer, self._refs)
         self._producer = producer
         self._refs = refs
+        self.set_cache_sig(None)         # a new graph: unknown until the owner says what it shows
         new_profile = profile is not self._profile
         self._profile = profile
         with self._lock:
@@ -97,6 +111,28 @@ class Player:
             if was_playing:
                 self.play(was_playing)
 
+    def set_cache_sig(self, sig):
+        """What the graph now shows (see framecache.signature); None while
+        it is changing, which stops caching and cached playback."""
+        if sig != self._sig:
+            self._sig = sig
+            self._update_key()
+
+    def _update_key(self):
+        self._key = (self._sig, self._size) if self._sig is not None else None
+        # Frames rendered before the change may still be in the consumer's buffer.
+        self._skip = 8 + self.threads
+
+    @property
+    def cache_key(self):
+        return self._key
+
+    def preview_size(self):
+        return self._preview_size() if self._profile is not None else (0, 0)
+
+    def preview_rescale(self):
+        return mltlib.RENDER_RESCALE if self.scale >= 1.0 else self.scaling
+
     def _stale_consumer(self):
         return self._size != self._preview_size()
 
@@ -118,8 +154,9 @@ class Player:
         # instead of dropping late ones.
         real_time = self.threads if self.drop_frames else -self.threads
         # At full resolution the preview resamples exactly as the export does.
-        rescale = mltlib.RENDER_RESCALE if self.scale >= 1.0 else self.scaling
-        for k, v in (("real_time", real_time), ("rescale", rescale), ("mlt_image_format", "rgb"),
+        rescale = self.preview_rescale()
+        for k, v in (("real_time", real_time), ("video_off", 1 if self.cached_mode else 0),
+                     ("rescale", rescale), ("mlt_image_format", "rgb"),
                      ("buffer", 5 + self.threads), ("prefill", 1), ("scrub_audio", 0), ("channels", 2),
                      ("frequency", 48000), ("progressive", 1), ("terminate_on_pause", 0),
                      ("volume", float(self.volume))):
@@ -127,6 +164,7 @@ class Player:
         self._event = lib.mlt_events_listen(mltlib.ptr(consumer.get_properties()), None,
                                             b"consumer-frame-show", self._listener)
         self._consumer, self._preview_profile, self._size = consumer, pp, (w, h)
+        self._update_key()
 
     def _cptr(self):
         return mltlib.ptr(self._consumer.get_consumer())
@@ -210,8 +248,37 @@ class Player:
         elif speed < 0 and self.position <= 0:
             return
         self._set_speed(speed)
+        if speed == 1.0 and self._cache_ahead():
+            self._set_cached_mode(True)
         lib.mlt_consumer_purge(self._cptr())
         self.refresh()
+
+    def _cache_ahead(self, seconds=1.0):
+        """True when the next ``seconds`` (or the rest) are all in the cache."""
+        if self.cache is None or not self.cache.enabled or self._key is None:
+            return False
+        end = self.loop_range[1] if self.loop and self.loop_range else self.length
+        want = max(1, min(int(round(self.fps * seconds)), end - self.position))
+        return self.cache.run_ahead(self._key, self.position, want) >= want
+
+    def _set_cached_mode(self, on):
+        """Restart the consumer with or without picture rendering, keeping
+        the speed and the position."""
+        self._switch = None
+        if on == self.cached_mode or self._consumer is None or self._producer is None:
+            return
+        self.cached_mode = on
+        active = Player._active is self
+        self._stop_consumer()
+        self._consumer.set("video_off", 1 if on else 0)
+        self._producer.seek(self.position)
+        if active:
+            self._start_consumer()
+
+    def _apply_switch(self):
+        if self._switch is not None:
+            self._set_cached_mode(self._switch)
+        return False
 
     def pause(self):
         if self._producer is None or self.speed == 0.0:
@@ -267,21 +334,38 @@ class Player:
             frame = event.u.p
             if not frame:
                 return
-            w, h = self._size
-            cw, ch = ctypes.c_int(w), ctypes.c_int(h)
-            fmt = ctypes.c_int(mltlib.IMAGE_RGB)
-            buf = ctypes.POINTER(ctypes.c_uint8)()
-            if lib.mlt_frame_get_image(frame, ctypes.byref(buf), ctypes.byref(fmt),
-                                       ctypes.byref(cw), ctypes.byref(ch), 0) or not buf:
-                return
-            if fmt.value != mltlib.IMAGE_RGB:
-                return
-            pixels = ctypes.string_at(buf, cw.value * ch.value * 3)
             pos = lib.mlt_frame_get_position(frame)
+            key, cache = self._key, self.cache
+            # Frames still in flight from before a change are shown but not kept.
+            keep = key is not None and cache is not None and self._skip <= 0
+            if self._skip > 0:
+                self._skip -= 1
+            item = cache.get(key, pos) if self.cached_mode and key is not None else None
+            if item is not None:
+                pixels, cw, ch = item
+                self.cache_hits += 1
+            else:
+                w, h = self._size
+                cw, ch = ctypes.c_int(w), ctypes.c_int(h)
+                fmt = ctypes.c_int(mltlib.IMAGE_RGB)
+                buf = ctypes.POINTER(ctypes.c_uint8)()
+                if lib.mlt_frame_get_image(frame, ctypes.byref(buf), ctypes.byref(fmt),
+                                           ctypes.byref(cw), ctypes.byref(ch), 0) or not buf:
+                    return
+                if fmt.value != mltlib.IMAGE_RGB:
+                    return
+                pixels = ctypes.string_at(buf, cw.value * ch.value * 3)
+                cw, ch = cw.value, ch.value
+                # The first picture of a fresh graph can be MLT's test card (see set_producer).
+                if keep and not self._settle and (cw, ch) == self._size:
+                    cache.put(key, pos, pixels, cw, ch)
+                if self.cached_mode and self.speed != 0.0 and self._switch is None:
+                    self._switch = False
+                    GLib.idle_add(self._apply_switch)
             left = lib.mlt_properties_get_double(frame, b"meta.media.audio_level.0")
             right = lib.mlt_properties_get_double(frame, b"meta.media.audio_level.1")
             with self._lock:
-                self._pending = (pixels, cw.value, ch.value, pos, left, right)
+                self._pending = (pixels, cw, ch, pos, left, right)
                 schedule = not self._scheduled
                 self._scheduled = True
             if schedule:
@@ -303,6 +387,11 @@ class Player:
                 return False
         if self.speed != 0.0:
             self.position = pos
+            # Reaching a long enough cached stretch while rendering: play it from RAM.
+            if self.speed == 1.0 and not self.cached_mode and self._switch is None and pos % 10 == 0 \
+                    and self._cache_ahead(3.0):
+                self._switch = True
+                GLib.idle_add(self._apply_switch)
         if self.on_frame:
             self.on_frame(pixels, w, h, pos)
         if self.on_levels:

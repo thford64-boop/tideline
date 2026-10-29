@@ -454,6 +454,51 @@ def text_box(effect, t, W, H):
     return x, y, w, h
 
 
+_BOX_CACHE = {}
+
+
+def title_box(effect, t, W, H):
+    """(x, y, w, h) of a title's text block in the frame, measured with
+    Pango the way qtext lays it out (padding included, outline not), for
+    editing titles on the Program monitor. Falls back to ``text_box``."""
+    p = lambda name, default: effect.value(name, t, default)
+    text = str(p("text", "Title") or " ")
+    family, size = p("font", "Sans") or "Sans", max(1, int(round(float(p("size", 96)))))
+    bold, italic = bool(p("bold", False)), bool(p("italic", False))
+    key = (text, family, size, bold, italic)
+    if key not in _BOX_CACHE:
+        try:
+            import cairo
+            import gi
+            gi.require_version("Pango", "1.0")
+            gi.require_version("PangoCairo", "1.0")
+            from gi.repository import Pango, PangoCairo
+            layout = PangoCairo.create_layout(cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1)))
+            desc = Pango.FontDescription()
+            desc.set_family(family)
+            desc.set_absolute_size(size * Pango.SCALE)
+            desc.set_weight(Pango.Weight.BOLD if bold else Pango.Weight.NORMAL)
+            desc.set_style(Pango.Style.ITALIC if italic else Pango.Style.NORMAL)
+            layout.set_font_description(desc)
+            layout.set_text(text, -1)
+            logical = layout.get_pixel_extents()[1]
+            _BOX_CACHE[key] = (float(logical.width), float(logical.height))
+        except (ImportError, ValueError):
+            _BOX_CACHE[key] = None
+        if len(_BOX_CACHE) > 2000:
+            _BOX_CACHE.clear()
+    size_wh = _BOX_CACHE.get(key)
+    if size_wh is None:
+        return text_box(effect, t, W, H)
+    pad = float(p("padding", 0))
+    w, h = size_wh[0] + 2 * pad, size_wh[1] + 2 * pad
+    off = p("offset", [0.0, 0.0]) or [0.0, 0.0]
+    halign, valign = p("halign", "center"), p("valign", "middle")
+    x = off[0] + (0.0 if halign == "left" else W - w if halign == "right" else (W - w) / 2)
+    y = off[1] + (0.0 if valign == "top" else H - h if valign == "bottom" else (H - h) / 2)
+    return x, y, w, h
+
+
 def _anim_state(kind, u, dist):
     """(dx, dy, scale, opacity) of a text animation ``u`` of the way (0..1)
     from its start to the resting text."""

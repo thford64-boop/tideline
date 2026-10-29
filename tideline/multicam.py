@@ -7,14 +7,13 @@ each tagged with the camera it came from. A clip of it in another sequence
 shows one angle (``Clip.angle``); cutting between cameras is splitting that
 clip and giving the parts other angles. Cameras are synced by their sound
 (the loudness changes of each recording, cross-correlated), by their In
-points, or by their first frames. No GTK; ffmpeg reads the sound.
+points, or by their first frames. No GTK; the chosen decoder reads the sound.
 """
-
-import subprocess
 
 import numpy as np
 
 from .edits import Editor
+from .engine import decoders
 from .model import Sequence
 
 SYNC_MODES = [("audio", "Audio"), ("in", "In points"), ("start", "First frames")]
@@ -55,15 +54,10 @@ def envelope(path, rate=ENVELOPE_RATE, seconds=None):
     """Onsets of a recording's sound: how much louder it gets, ``rate`` times
     a second. Claps, words and hits stand out the same way in every
     camera's recording of them, whatever the microphone."""
-    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", path, "-vn", "-ac", "1",
-           "-ar", str(_DECODE_RATE), "-f", "s16le"]
-    if seconds:
-        cmd += ["-t", f"{float(seconds):.3f}"]
-    try:
-        raw = subprocess.run(cmd + ["-"], capture_output=True, check=True).stdout
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise SyncError(f"Could not read the sound of {path}: {exc}") from None
-    x = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    samples = decoders.audio_mono(path, _DECODE_RATE, seconds)
+    if samples is None:
+        raise SyncError(f"Could not read the sound of {path}.")
+    x = samples.astype(np.float32) / 32768.0
     step = _DECODE_RATE // rate
     n = len(x) // step
     if n < 4:

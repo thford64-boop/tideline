@@ -141,6 +141,50 @@ def curve_of(key):
     return list(BEZIER_PRESETS.get(key[2], DEFAULT_BEZIER))
 
 
+# Influence of Easy Ease: how far (0..1 of the segment) the flat handle reaches.
+EASE_INFLUENCE = 0.33
+EASES = [("linear", "Linear"), ("ease_in", "Ease In"), ("ease_out", "Ease Out"), ("easy_ease", "Easy Ease")]
+
+
+def ease_key(kfs, i, how):
+    """Keyframes with key ``i`` eased the way motion graphics apps do it:
+    "ease_in" flattens the curve arriving at it, "ease_out" the one leaving
+    it, "easy_ease" both, "linear" makes both straight. Only the handles at
+    key ``i`` change; the far ends of its segments keep their shape."""
+    out = [list(k) for k in kfs]
+    if not 0 <= i < len(out):
+        return out
+    straight = how == "linear"
+    if how in ("ease_out", "easy_ease", "linear") and i + 1 < len(out) and out[i][2] != "hold":
+        c = curve_of(out[i])
+        c[0], c[1] = (1 / 3, 1 / 3) if straight else (EASE_INFLUENCE, 0.0)
+        out[i] = out[i][:2] + ["bezier", [round(v, 4) for v in c]]
+    if how in ("ease_in", "easy_ease", "linear") and i > 0 and out[i - 1][2] != "hold":
+        c = curve_of(out[i - 1])
+        c[2], c[3] = (2 / 3, 2 / 3) if straight else (1.0 - EASE_INFLUENCE, 1.0)
+        out[i - 1] = out[i - 1][:2] + ["bezier", [round(v, 4) for v in c]]
+    for j in (i - 1, i):
+        # A curve that ended up straight is plain linear again.
+        if 0 <= j < len(out) and out[j][2] == "bezier" and \
+                all(abs(a - b) < 1e-3 for a, b in zip(out[j][3], (1 / 3, 1 / 3, 2 / 3, 2 / 3))):
+            out[j] = out[j][:2] + ["linear"]
+    return out
+
+
+def speed(kfs, t, fps, dt=0.5):
+    """How fast a keyframed value changes at frame ``t``, in units per
+    second (the length of the change for points; None for values that do
+    not interpolate)."""
+    a, b = evaluate(kfs, t - dt), evaluate(kfs, t + dt)
+    if a is None or not interpolates(a) or is_color(a):
+        return None
+    if isinstance(a, (list, tuple)):
+        d = math.sqrt(sum((float(y) - float(x)) ** 2 for x, y in zip(a, b)))
+    else:
+        d = abs(float(b) - float(a))
+    return d / (2 * dt) * fps
+
+
 def is_color(v):
     return isinstance(v, str) and v.startswith("#") and len(v) in (7, 9)
 

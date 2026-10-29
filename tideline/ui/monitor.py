@@ -5,10 +5,23 @@ import math
 import cairo
 from gi.repository import Gdk, GLib, GObject, Graphene, Gsk, Gtk
 
-from ..engine.effects import EFFECTS, motion_box
+from ..engine.effects import EFFECTS, motion_box, title_box, turned
 from ..settings import DRAFT_NOTE, PREVIEW_SCALES
 from . import theme
 from .widgets import TimecodeField, icon_button, set_button_icon
+
+
+_TITLE_CSS = None
+
+
+def _title_css():
+    """The style of the in-place title editor (one at a time), set per title."""
+    global _TITLE_CSS
+    if _TITLE_CSS is None:
+        _TITLE_CSS = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), _TITLE_CSS,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
+    return _TITLE_CSS
 
 
 class VideoView(Gtk.Widget):
@@ -160,7 +173,11 @@ class MonitorPanel(Gtk.Box):
         hint = ("Double-click a clip in the Project panel to open it here" if kind == "source"
                 else "Drag media into the timeline to start a sequence")
         self.view = VideoView(hint)
-        self.append(self.view)
+        # The Program monitor types titles in place: a text box over the picture.
+        self.stack = Gtk.Overlay()
+        self.stack.set_child(self.view)
+        self.append(self.stack)
+        self.title_editor = None
         self.scrub = ScrubBar(self._seek)
         self.append(self.scrub)
 
@@ -242,7 +259,11 @@ class MonitorPanel(Gtk.Box):
             drag.connect("drag-update", self._xf_update)
             drag.connect("drag-end", self._xf_end)
             self.view.add_controller(drag)
+            double = Gtk.GestureClick(button=1)
+            double.connect("pressed", self._view_clicked)
+            self.view.add_controller(double)
             self._xf = None
+            self._editing = None     # (clip, text effect, text when opened) while a title is typed in place
         self.refresh()
 
     # -- state -----------------------------------------------------------
@@ -371,11 +392,180 @@ class MonitorPanel(Gtk.Box):
         cx, cy, w, h = motion_box(get("position"), get("anchor"), sw, sh, get("rotation"), seq.width, seq.height)
         return cx, cy, w, h, get("rotation")
 
+    # -- titles on the canvas ----------------------------------------------
+    def _motion_map(self, clip):
+        """fn((x, y) in the clip's own frame) -> sequence pixels after its
+        Motion, and Motion's (x scale, y scale, rotation)."""
+        seq = self.app.seq
+        W, H = seq.width, seq.height
+        motion = clip.effect("motion")
+        if motion is None or not motion.enabled:
+            return (lambda p: (float(p[0]), float(p[1]))), (1.0, 1.0, 0.0)
+        cx, cy, bw, bh, rot = self._box(clip, motion)
+        sx, sy = bw / W, bh / H
+
+        def fn(p):
+            ox, oy = turned((p[0] - W / 2) * sx, (p[1] - H / 2) * sy, rot)
+            return cx + ox, cy + oy
+
+        return fn, (sx, sy, rot)
+
+    def _title_box(self, clip, text):
+        """The text of a title as it sits on screen: (cx, cy, w, h, rotation)
+        in sequence pixels."""
+        seq = self.app.seq
+        x, y, w, h = title_box(text, self.app.clip_time(clip), seq.width, seq.height)
+        fn, (sx, sy, rot) = self._motion_map(clip)
+        cx, cy = fn((x + w / 2, y + h / 2))
+        return cx, cy, w * sx, h * sy, rot
+
+    @staticmethod
+    def _local(box, sx, sy):
+        """A sequence point in a turned box's own axes, from its centre."""
+        cx, cy, _, _, rot = box
+        r = math.radians(-rot)
+        return ((sx - cx) * math.cos(r) - (sy - cy) * math.sin(r),
+                (sx - cx) * math.sin(r) + (sy - cy) * math.cos(r))
+
+    def _title_target(self):
+        """(clip, text effect) when the one selected video clip is a title
+        (has a Text effect) under the playhead."""
+        app = self.app
+        seq = app.seq
+        if seq is None or app.tool not in ("select", "type"):
+            return None
+        pairs = [(t, c) for t, c in app.selected_clips() if t.kind == "video"]
+        if len(pairs) != 1:
+            return None
+        clip = pairs[0][1]
+        text = clip.effect("text")
+        if text is None or not text.enabled or not (clip.start <= seq.playhead < clip.end):
+            return None
+        return clip, text
+
+    def _title_at(self, sx, sy):
+        """Topmost title whose text is under sequence point (sx, sy)."""
+        seq = self.app.seq
+        for track in reversed(seq.video_tracks):
+            c = track.clip_at(seq.playhead)
+            if c is None or track.hidden or not c.enabled:
+                continue
+            text = c.effect("text")
+            if text is None or not text.enabled:
+                continue
+            box = self._title_box(c, text)
+            lx, ly = self._local(box, sx, sy)
+            if abs(lx) <= box[2] / 2 + 4 and abs(ly) <= box[3] / 2 + 4:
+                return c, text
+        return None
+
+    def _view_clicked(self, gesture, n_press, px, py):
+        app = self.app
+        if n_press != 2 or app.seq is None or app.tool not in ("select", "type") or app.picker is not None:
+            return
+        hit = self._title_at(*self._to_seq(px, py))
+        if hit is not None:
+            app.select([hit[0].id], expand=False)
+            self.edit_title(*hit)
+
+    def edit_title(self, clip, text=None, select_all=True):
+        """Type a title's text straight onto the Program monitor."""
+        app = self.app
+        seq = app.seq
+        text = text or clip.effect("text")
+        if seq is None or text is None:
+            return None
+        self.finish_title()
+        if app.program.playing:
+            app.program.pause()
+        pdef = EFFECTS["text"].param("text")
+        current = str(app.param_value(clip, text, pdef) or "")
+        self._editing = (clip, text, current)
+        tv = Gtk.TextView(accepts_tab=False, halign=Gtk.Align.START, valign=Gtk.Align.START)
+        tv.add_css_class("title-editor")
+        self.title_editor = tv
+        self._place_title_editor()
+        buf = tv.get_buffer()
+        buf.set_text(current)
+        if select_all:
+            buf.select_range(buf.get_start_iter(), buf.get_end_iter())
+        buf.connect("changed", self._title_typed)
+        focus = Gtk.EventControllerFocus()
+        focus.connect("leave", lambda *_: GLib.idle_add(self.finish_title))
+        tv.add_controller(focus)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self._title_key)
+        tv.add_controller(keys)
+        self.stack.add_overlay(tv)
+        tv.grab_focus()
+        app.status("Type the title. Enter starts a new line; Ctrl+Enter, Esc or a click elsewhere finishes.")
+        return tv
+
+    def _place_title_editor(self):
+        tv, editing = self.title_editor, self._editing
+        if tv is None or editing is None:
+            return
+        app, seq = self.app, self.app.seq
+        clip, text, _ = editing
+        x, y, w, h = self.view.frame_rect()
+        k = w / seq.width if seq.width else 1.0
+        cx, cy, bw, bh, _rot = self._title_box(clip, text)
+        _, (sx, _sy, _r) = self._motion_map(clip)
+        pv = lambda n: app.param_value(clip, text, EFFECTS["text"].param(n))
+        size = max(8.0, float(pv("size")) * sx * k)
+        family = str(pv("font") or "Sans").replace('"', "")
+        _title_css().load_from_string(
+            f'textview.title-editor {{ font-family: "{family}"; font-size: {size:.1f}px; '
+            f'font-weight: {700 if pv("bold") else 400}; font-style: {"italic" if pv("italic") else "normal"}; '
+            f'color: white; }}')
+        justify = {"left": Gtk.Justification.LEFT, "right": Gtk.Justification.RIGHT}.get(
+            str(pv("halign")), Gtk.Justification.CENTER)
+        tv.set_justification(justify)
+        tv.set_margin_start(max(0, int(x + (cx - bw / 2) * k) - 5))
+        tv.set_margin_top(max(0, int(y + (cy - bh / 2) * k) - 3))
+        tv.set_size_request(max(60, int(bw * k) + 10), max(int(size * 1.3), int(bh * k) + 6))
+
+    def _title_typed(self, buf):
+        if self._editing is None:
+            return
+        clip, text, _ = self._editing
+        value = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        self.app.set_param(clip, text, EFFECTS["text"].param("text"), value, final=False)
+        self._place_title_editor()
+
+    def _title_key(self, ctrl, keyval, keycode, state):
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and state & Gdk.ModifierType.CONTROL_MASK:
+            self.finish_title()
+            return True
+        if keyval == Gdk.KEY_Escape:
+            self.finish_title()
+            return True
+        return False
+
+    def finish_title(self):
+        """Close the in-place title editor, keeping what was typed (one undo step)."""
+        tv, editing = self.title_editor, self._editing
+        self.title_editor, self._editing = None, None
+        if tv is None:
+            return False
+        buf = tv.get_buffer()
+        value = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        self.stack.remove_overlay(tv)
+        clip, text, before = editing
+        if value != before:
+            self.app.set_param(clip, text, EFFECTS["text"].param("text"), value, final=True)
+            self.app.emit("selection")
+        self.view.queue_draw()
+        return False
+
     def _anchor(self, clip, motion):
         """Where the anchor point is in the frame: Motion's Position."""
         return self.app.param_value(clip, motion, EFFECTS["motion"].param("position"))
 
     def _overlay(self, cr, x, y, w, h):
+        title = self._title_target()
+        if title is not None:
+            return self._title_overlay(cr, x, y, w, h, *title)
         target = self._target()
         if target is None:
             return
@@ -408,6 +598,28 @@ class MonitorPanel(Gtk.Box):
         cr.stroke()
         cr.restore()
 
+    def _title_overlay(self, cr, x, y, w, h, clip, text):
+        """The selected title's text box: drag inside to move the text, a
+        corner to size it; double-click to type."""
+        if self._editing is not None:
+            return
+        k = w / self.app.seq.width
+        cx, cy, bw, bh, rot = self._title_box(clip, text)
+        cr.save()
+        cr.translate(x + cx * k, y + cy * k)
+        cr.rotate(math.radians(rot))
+        cr.set_line_width(1.2)
+        cr.set_source_rgba(*theme.rgb(theme.ACCENT, 0.95))
+        cr.set_dash([4, 3])
+        cr.rectangle(-bw * k / 2 - 3, -bh * k / 2 - 3, bw * k + 6, bh * k + 6)
+        cr.stroke()
+        cr.set_dash([])
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                cr.rectangle(sx * (bw * k / 2 + 3) - 4, sy * (bh * k / 2 + 3) - 4, 8, 8)
+        cr.fill()
+        cr.restore()
+
     def _to_seq(self, px, py):
         x, y, w, h = self.view.frame_rect()
         seq = self.app.seq
@@ -426,10 +638,39 @@ class MonitorPanel(Gtk.Box):
             app.picked(sx, sy)
             return
         if app.tool == "type":
+            hit = self._title_at(sx, sy)
+            if hit is not None:
+                app.select([hit[0].id], expand=False)
+                app.set_tool("select")
+                self.edit_title(*hit, select_all=False)
+                return
             app.cmd_new_title(offset=[round(sx), round(sy)])
             app.set_tool("select")
+            clips = [c for t, c in app.selected_clips() if c.effect("text") is not None]
+            if clips:
+                self.edit_title(clips[0])
             return
         if app.tool != "select":
+            return
+        title = self._title_target()
+        if title is not None and self._editing is None:
+            clip, text = title
+            box = self._title_box(clip, text)
+            lx, ly = self._local(box, sx, sy)
+            grab = 12 * seq.width / max(1.0, self.view.frame_rect()[2])
+            near_corner = abs(abs(lx) - box[2] / 2) < grab and abs(abs(ly) - box[3] / 2) < grab
+            if near_corner or (abs(lx) <= box[2] / 2 + 4 and abs(ly) <= box[3] / 2 + 4):
+                pdef = EFFECTS["text"]
+                _, scales = self._motion_map(clip)
+                self._xf = {"mode": "text_size" if near_corner else "text_move", "clip": clip, "text": text,
+                            "offset": list(app.param_value(clip, text, pdef.param("offset")) or [0.0, 0.0]),
+                            "size": float(app.param_value(clip, text, pdef.param("size"))), "scales": scales,
+                            "centre": box[:2], "dist": max(1.0, math.hypot(sx - box[0], sy - box[1])),
+                            "start": (sx, sy), "moved": False}
+                return
+        hit = self._title_at(sx, sy)
+        if hit is not None:
+            app.select([hit[0].id], expand=False)
             return
         target = self._target()
         if target is not None:
@@ -453,7 +694,7 @@ class MonitorPanel(Gtk.Box):
             if c is None or track.hidden or not c.enabled:
                 continue
             m = c.effect("motion")
-            if m is None:
+            if m is None or (c.effect("text") is not None and c.effect("text").enabled):
                 continue
             cx, cy, bw, bh, rot = self._box(c, m)
             r = math.radians(-rot)
@@ -468,6 +709,8 @@ class MonitorPanel(Gtk.Box):
         xf = self._xf
         app, seq = self.app, self.app.seq
         k = seq.width / max(1.0, self.view.frame_rect()[2])
+        if xf["mode"] in ("text_move", "text_size"):
+            return self._text_apply(xf, dx * k, dy * k, final)
         edef = EFFECTS["motion"]
         if xf["mode"] == "move":
             pos = [round(xf["pos"][0] + dx * k, 1), round(xf["pos"][1] + dy * k, 1)]
@@ -477,6 +720,22 @@ class MonitorPanel(Gtk.Box):
             d = math.hypot(sx - xf["pos"][0], sy - xf["pos"][1])
             scale = round(max(1.0, xf["scale"] * d / xf["dist"]), 1)
             app.set_param(xf["clip"], xf["motion"], edef.param("scale"), scale, final)
+
+    def _text_apply(self, xf, dx, dy, final):
+        """Drag of a title's text box by (dx, dy) sequence pixels: its Offset
+        moves (through Motion's scale and turn), or its size scales."""
+        app, edef = self.app, EFFECTS["text"]
+        sx, sy, rot = xf["scales"]
+        if xf["mode"] == "text_move":
+            lx, ly = turned(dx, dy, -rot)
+            off = [round(xf["offset"][0] + lx / max(1e-6, sx), 1), round(xf["offset"][1] + ly / max(1e-6, sy), 1)]
+            app.set_param(xf["clip"], xf["text"], edef.param("offset"), off, final)
+        else:
+            px, py = xf["start"][0] + dx, xf["start"][1] + dy
+            d = math.hypot(px - xf["centre"][0], py - xf["centre"][1])
+            pdef = edef.param("size")
+            size = int(round(max(pdef.min, min(pdef.max, xf["size"] * d / xf["dist"]))))
+            app.set_param(xf["clip"], xf["text"], pdef, size, final)
 
     def _xf_update(self, gesture, dx, dy):
         if self._xf and (self._xf["moved"] or abs(dx) + abs(dy) > 2):
